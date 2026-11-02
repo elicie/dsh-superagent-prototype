@@ -5,8 +5,8 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SENSITIVE_ENV_PATTERN, type SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
-import { GIT_LOCATION, agentVariables, credentialHelper, runAsWorker, verifyDirectory, withoutDirectory, workerBin, workerGitConfig, writeEnvironment }
-  from '../src/infra/environment.ts'
+import { GIT_LOCATION, agentVariables, credentialHelper, neutralVariables, runAsWorker, sharedWorkers, verifyDirectory, withoutDirectory, workerBin,
+  workerGitConfig, writeDispatchers, writeEnvironment, writeSharedGitConfig, type Dispatch } from '../src/infra/environment.ts'
 import { CliError } from '../src/infra/commands.ts'
 import { testDeployment } from './fixtures/deployment.ts'
 import { gitEnv } from './fixtures/git.ts'
@@ -182,5 +182,100 @@ describe('the repository the host\'s environment names', () => {
       for (const name of GIT_LOCATION) expect(env, name).not.toHaveProperty(name)
       expect(env.GIT_CEILING_DIRECTORIES).toBe(dir)
     } finally { vi.unstubAllEnvs() }
+  })
+})
+
+describe('shared dispatchers', () => {
+  const shared = () => sharedWorkers(join(dir, 'shared'))
+  const a = () => join(dir, 'a'), b = () => join(dir, 'b')
+  /** Both instances configured: A blocks personal-gh (its shim exists), B blocks nothing. */
+  const both = (): Dispatch => ({ configured: [workerBin(a()), workerBin(b())], present: 2, commands: ['personal-gh'] })
+  beforeEach(async () => {
+    // The real gh answers as the account its configuration directory names, also as a git credential helper.
+    program(join(dir, 'real', 'gh'), [
+      'account=$(basename "$GH_CONFIG_DIR")',
+      'if [ "$1 $2" = "auth git-credential" ]; then cat > /dev/null; echo username=x-access-token; echo "password=token-$account"; exit 0; fi',
+      'echo "gh as $account: $*"',
+    ].join('\n'))
+    program(join(dir, 'real', 'personal-gh'), 'echo "personal gh: $*"')
+    // Account wrappers that call gh by name, as docs/006-deployment.md shows.
+    const wrapper = (name: string) => program(join(dir, `gh-${name}`), `GH_CONFIG_DIR=${dir}/${name}-config exec gh "$@"`)
+    const base = testDeployment()
+    await writeEnvironment(testDeployment({ stateDir: a(), github: { ...base.github, cli: wrapper('a'), login: 'agent-a' }, feishu: undefined }), ['personal-gh'])
+    await writeEnvironment(testDeployment({ stateDir: b(), github: { ...base.github, cli: wrapper('b'), login: 'agent-b' }, feishu: undefined }), [])
+    await writeSharedGitConfig(shared())
+    await writeDispatchers(shared(), both())
+  })
+  /** A worker shell's environment: the process's as the shared environment sets it, and DSH_SUPERAGENT_WORKER_BIN when given. */
+  const shell = (bin?: string, extra: Record<string, string> = {}) => workerEnv({ PATH: [shared().bin, join(dir, 'real'), '/usr/bin', '/bin'].join(':'), HOME: dir,
+    ...neutralVariables(), GIT_CONFIG_GLOBAL: shared().gitconfig, ...bin === undefined ? {} : { DSH_SUPERAGENT_WORKER_BIN: bin }, ...extra })
+  const run = (command: string, args: string[], env: Record<string, string>) => exec(command, args, { cwd: dir, env, timeout: 10_000 })
+  const output = async (command: string, args: string[], env: Record<string, string>) => (await run(command, args, env)).stdout
+  const refusal = (command: string, env: Record<string, string>) => expect(run(command, ['api', 'user'], env)).rejects
+
+  it('run the shims of the instance the variable names, through a wrapper that calls gh by name without looping', async () => {
+    expect(await output('gh', ['api', 'user'], shell(workerBin(a())))).toBe('gh as a-config: api user\n')
+    expect(await output('gh', ['api', 'user'], shell(workerBin(b())))).toBe('gh as b-config: api user\n')
+    // And say which program they would run, as setup checks.
+    expect(await output('gh', [], shell(workerBin(b()), { DSH_SUPERAGENT_WORKER_RESOLVE: '1' }))).toBe(`${join(workerBin(b()), 'gh')}\n`)
+  })
+  it('run a command one instance blocks as blocked for it and as itself for another', async () => {
+    await refusal('personal-gh', shell(workerBin(a()))).toMatchObject({ code: 1, stderr: 'personal-gh is blocked in this installation; use gh, which acts as agent-a.\n' })
+    expect(await output('personal-gh', ['x'], shell(workerBin(b())))).toBe('personal gh: x\n')
+    expect(await output('personal-gh', [], shell(workerBin(b()), { DSH_SUPERAGENT_WORKER_RESOLVE: '1' }))).toBe(`${join(dir, 'real', 'personal-gh')}\n`)
+  })
+  it('stand for the only instance when the variable is unset, and refuse when several share the process', async () => {
+    await writeDispatchers(shared(), { configured: [workerBin(a())], present: 1, commands: [] })
+    expect(await output('gh', ['api', 'user'], shell())).toBe('gh as a-config: api user\n')
+    const several = 'gh is unavailable here: several dsh-superagent instances share this process, and this command runs outside their sessions, so it has no account to act as.\n'
+    // One configured instance and one still waiting for setup.
+    await writeDispatchers(shared(), { configured: [workerBin(a())], present: 2, commands: [] })
+    await refusal('gh', shell()).toMatchObject({ code: 1, stderr: several })
+    await writeDispatchers(shared(), both())
+    await refusal('gh', shell()).toMatchObject({ code: 1, stderr: several })
+    // While no instance is configured, as before the first setup or while the only one restarts, nothing reaches a real CLI.
+    await writeDispatchers(shared(), { configured: [], present: 1, commands: ['personal-gh'] })
+    await refusal('gh', shell()).toMatchObject({ code: 1, stderr: 'gh is unavailable: the dsh-superagent instance of this process has not finished setup.\n' })
+    await writeDispatchers(shared(), { configured: [], present: 0, commands: ['personal-gh'] })
+    await refusal('gh', shell()).toMatchObject({ code: 1, stderr: 'gh is unavailable: no dsh-superagent instance runs in this process.\n' })
+    await refusal('lark-cli', shell()).toMatchObject({ code: 1, stderr: 'lark-cli is unavailable: no dsh-superagent instance runs in this process.\n' })
+    // A command an instance blocked fails too, rather than running the real one.
+    await refusal('personal-gh', shell()).toMatchObject({ code: 1, stderr: 'personal-gh is unavailable: no dsh-superagent instance runs in this process.\n' })
+    // The variable names an instance that is no longer configured.
+    await refusal('gh', shell(workerBin(a()))).toMatchObject({ code: 1, stderr: expect.stringContaining('names no dsh-superagent instance that finished setup') })
+    await refusal('personal-gh', shell(workerBin(b()))).toMatchObject({ code: 1, stderr: expect.stringContaining('names no dsh-superagent instance that finished setup') })
+  })
+  it('refuse an unknown directory and the values that say the owner is not ready or not one', async () => {
+    await refusal('gh', shell(join(dir, 'elsewhere'))).toMatchObject({ code: 1,
+      stderr: 'gh is unavailable: DSH_SUPERAGENT_WORKER_BIN names no dsh-superagent instance that finished setup in this process.\n' })
+    await refusal('gh', shell('')).toMatchObject({ code: 1, stderr: expect.stringContaining('names no dsh-superagent instance') })
+    await refusal('lark-cli', shell('unconfigured')).toMatchObject({ code: 1, stderr: 'lark-cli is unavailable: the dsh-superagent instance of this session has not finished setup.\n' })
+    await refusal('gh', shell('ambiguous')).toMatchObject({ code: 1, stderr: 'gh is unavailable: more than one dsh-superagent instance claims this session.\n' })
+  })
+  it('give git the credentials of the instance the variable names, and fail without asking anyone when no instance owns the call', async () => {
+    const log = join(dir, 'asked')
+    const askpass = program(join(dir, 'askpass'), `echo asked >> ${log}; echo operator-secret`)
+    const fill = async (env: Record<string, string>) => {
+      const child = run('git', ['credential', 'fill'], env)
+      child.child.stdin?.end('protocol=https\nhost=github.com\n\n')
+      return (await child).stdout
+    }
+    expect(await fill(shell(workerBin(a())))).toContain('password=token-a-config')
+    expect(await fill(shell(workerBin(b())))).toContain('password=token-b-config')
+    // Operator askpass helpers stay unasked: GIT_ASKPASS is empty in the shared environment and overrides SSH_ASKPASS.
+    await expect(fill(shell(undefined, { SSH_ASKPASS: askpass }))).rejects.toMatchObject({
+      stderr: expect.stringMatching(/several dsh-superagent instances share this process[\s\S]*terminal prompts disabled/) })
+    expect(() => readFileSync(log, 'utf8')).toThrow()
+    expect(readFileSync(shared().gitconfig, 'utf8')).toContain(`helper = "${credentialHelper(join(shared().bin, 'gh'))}"`)
+    // The shared configuration names no identity: a worker's commit takes the author its instructions name.
+    await expect(run('git', ['config', 'user.email'], shell(workerBin(a())))).rejects.toMatchObject({ code: 1, stdout: '' })
+    await expect(run('git', ['config', '--get-regexp', '^user\\.(name|email)$'], shell(workerBin(a())))).rejects.toMatchObject({ code: 1 })
+  })
+  it('write gh, lark-cli and the blocked commands of configured instances only, and refuse what they did not write', async () => {
+    expect(readdirSync(shared().bin).sort()).toEqual(['gh', 'lark-cli', 'personal-gh'])
+    await writeDispatchers(shared(), { configured: [workerBin(b())], present: 2, commands: ['git', 'gh'] })
+    expect(readdirSync(shared().bin).sort()).toEqual(['gh', 'lark-cli'])
+    writeFileSync(join(shared().bin, 'mine'), '#!/bin/sh\n')
+    await expect(writeDispatchers(shared(), both())).rejects.toThrow(`${join(shared().bin, 'mine')} was not written by dsh-superagent`)
   })
 })

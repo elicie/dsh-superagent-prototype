@@ -5,6 +5,8 @@
   config:
     host: 127.0.0.1
     port: 3082
+# The bundle inserts dsh-superagent-worker-env at the root, which needs no configuration: it alone sets the process's PATH
+# and git variables, and runs each command as the instance whose Session runs it. Leave it enabled and outside every group.
 # The default instance: the bundle's own entries. Its management API stays at /orchestrator.
 - id: dsh-superagent
   config:

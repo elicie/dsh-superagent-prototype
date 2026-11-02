@@ -65,6 +65,17 @@ describe('setup', () => {
     // A renamed repository is still resolved by its old name; notifications carry GitHub's current full_name.
     expect((await resolveDeployment(machine(), { repository: 'acme/gadgets', cli: 'gh' }, probe, path)).repository).toBe('acme/widgets')
   })
+  it('skips the shared dispatchers, which another instance\'s setup put first on PATH, as it skips its own shims', async () => {
+    // Another instance's dispatcher of gh would bind this instance to that one's account.
+    mkdirSync(join(dir, 'shared', 'bin'), { recursive: true })
+    program(join(dir, 'shared', 'bin', 'gh'))
+    const shared = [join(dir, 'shared', 'bin'), path].join(':')
+    expect(executable('gh', shared, [join(dir, 'state', 'worker-bin'), join(dir, 'shared', 'bin')])).toBe(join(dir, 'bin', 'gh'))
+    expect(executable('gh', shared)).toBe(join(dir, 'shared', 'bin', 'gh'))
+    const deployment = await resolveDeployment(machine(), { repository: 'acme/widgets', cli: 'gh' }, probe, shared, [join(dir, 'shared', 'bin')])
+    expect(deployment.github.cli).toBe(join(dir, 'bin', 'gh'))
+    expect(await resolveFeishuBot(machine(), { cli: 'lark-cli' }, probe, shared, [join(dir, 'shared', 'bin')])).toMatchObject({ cli: join(dir, 'bin', 'lark-cli') })
+  })
   it('names what setup needs and where it is set', async () => {
     const needs = (place: string, code: string, values: Record<string, unknown>, github: unknown) =>
       expect(resolveDeployment(machine(), github, probe, path)).rejects.toEqual(setupError(place, code, values))

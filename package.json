@@ -18,6 +18,10 @@
       "types": "./lib/subscriptions.d.ts",
       "default": "./lib/subscriptions.js"
     },
+    "./worker-env": {
+      "types": "./lib/worker-env.d.ts",
+      "default": "./lib/worker-env.js"
+    },
     "./github-watch": "./lib/github-watch.js",
     "./feishu-watch": "./lib/feishu-watch.js",
     "./package.json": "./package.json",

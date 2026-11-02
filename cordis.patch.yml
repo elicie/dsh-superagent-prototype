@@ -2,6 +2,11 @@
 # profile supplies the `dsh-superagent` entry's stateDir (see docs/006-deployment.md and examples/profile.cordis.patch.yml); the plugin
 # refuses to start without stateDir.
 - insert:
+    # The worker environment every dsh-superagent of the process shares: the only entry that changes the process's PATH and git
+    # variables, and the dispatchers that run the shims of the instance whose Session runs a command. Keep it at the root, outside
+    # any instance group (docs/006-deployment.md, "Several instances in one profile").
+    - id: dsh-superagent-worker-env
+      name: dsh-superagent/worker-env
     - id: dsh-superagent
       name: dsh-superagent
     - id: dsh-superagent-subscriptions

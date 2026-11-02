@@ -4,7 +4,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 
 ## What runs
 
-- **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: the plugin changes process-wide `PATH` and git settings, and its process needs independent restarts and upgrades.
+- **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: the bundle changes process-wide `PATH` and git settings, so `gh`, `lark-cli` and git credentials in that process act as the agent's accounts or fail, and its process needs independent restarts and upgrades.
 - **An agent GitHub account.** The agent comments, pushes branches and opens pull requests as this account, through a GitHub CLI signed in only as that account.
 - **Optional:** a Feishu bot for chat requests.
 
@@ -124,7 +124,34 @@ One DeepSeek Harness process can run several instances, for example one per repo
 - Each instance needs its own `stateDir` and its own `instance` key. DSH refuses the routes of a second instance with the same key: `webserver: duplicate prefix route "/orchestrator-<instance>"`.
 - The management API of instance `widgets` is at `/orchestrator-widgets/api/`; the default instance keeps `/orchestrator/api/`. Grok subscriptions stay at `/orchestrator/api/subscriptions/grok`, shared by the whole process.
 - The **Superagent** panel shows the default instance. Read another instance through its API, or `scripts/dsh-superagent status --instance widgets`.
-- Use this only while at most one instance has finished setup. Setup sets `PATH` and the git variables of the whole process to its own command shims and git configuration, so a second configured instance would replace the first one's for both.
+- Each instance's workers use its own accounts. The shared worker environment, below, picks the instance for each command from the Session that runs it.
+
+#### Shared worker environment
+
+`PATH` and git's variables belong to the whole process, so no instance changes them. The bundle's `dsh-superagent-worker-env` entry (`dsh-superagent/worker-env`) does, once, when it starts, and it restores them when it stops. It sits at the root of the profile, outside every instance group, needs no configuration, and every instance uses it; do not disable it or move it into a group. Its directory is `<profile directory>/.dsh-superagent-workers`, for example `~/.dsh/profiles/superagent/.dsh-superagent-workers`. It is private to the process: a second process of the same profile refuses to start it, and so its instances do not start.
+
+- `PATH` starts with its `bin` directory of dispatchers: `gh`, `lark-cli` and every command an instance has blocked since the process started.
+- `GIT_CONFIG_GLOBAL` is its `gitconfig`: the agent's git configuration, whose github.com credential helper is the `gh` dispatcher. It sets no commit identity.
+- The instance-neutral variables are removed or set as described under [Setup checks](#setup-checks).
+
+Each model shell of an instance's Session gets `DSH_SUPERAGENT_WORKER_BIN`, the instance's `<stateDir>/worker-bin`. An instance owns its main Session and the Executor Sessions of its Tickets; a subagent belongs to the instance of its nearest owned parent, up to eight subagents up. A dispatcher runs that instance's shim of the command, or the command itself when only another instance blocks it. git's credential helper runs the same way, so git clones and pushes as the instance's account.
+
+A dispatcher fails, with a message on standard error, instead of running a command as an unknown account:
+
+| When | Message |
+| --- | --- |
+| The Session's instance has not finished setup, or restarts | `gh is unavailable: the dsh-superagent instance of this session has not finished setup.` |
+| Several instances claim the Session | `gh is unavailable: more than one dsh-superagent instance claims this session.` |
+| `DSH_SUPERAGENT_WORKER_BIN` names no configured instance | `gh is unavailable: DSH_SUPERAGENT_WORKER_BIN names no dsh-superagent instance that finished setup in this process.` |
+| No Session owns the command, and several instances have run in the process | `gh is unavailable here: several dsh-superagent instances share this process, and this command runs outside their sessions, so it has no account to act as.` |
+| No Session owns the command, and the only instance has not finished setup or restarts | `gh is unavailable: the dsh-superagent instance of this process has not finished setup.` |
+| No instance has started | `gh is unavailable: no dsh-superagent instance runs in this process.` |
+
+Each message names the command it stands for. git then fails without asking for credentials.
+
+A command no Session owns, such as one in the sidebar terminal, an MCP server or DeepSeek Harness's own git, runs as the instance only while the process has run exactly one instance and it finished setup, as before several instances could share one. Once a second instance has run, such commands fail until the process restarts.
+
+This is a guardrail, not isolation. A worker can set `DSH_SUPERAGENT_WORKER_BIN` itself, as it can already run another instance's shim, or any CLI, by its path. To keep instances' accounts apart from each other, run them as different OS users.
 
 ## Start and stop
 
@@ -246,14 +273,14 @@ curl -s -X PUT -H 'x-orchestrator-request: 1' -H 'content-type: application/json
 
 Setup uses the DeepSeek Harness subprocess service, as worker shells do. It removes environment variables whose names contain KEY, PASSWORD, SECRET or TOKEN.
 
-Setup verifies the GitHub repository and the agent's push access, writes the worker environment, and checks that git uses only the agent credentials for github.com. A Feishu setup failure disables only the Feishu Source.
+Setup verifies the GitHub repository and the agent's push access, writes the worker environment, and checks, as a worker of the instance runs them, that git uses only the shared `gh` dispatcher for github.com and that `gh` reaches the instance's shim. A Feishu setup failure disables only the Feishu Source. Setup skips the shims and the shared dispatchers when it looks for the CLIs on `PATH`.
 
-The process environment that setup writes:
+The worker environment that setup writes for its instance:
 
-- **Command shims** in `<stateDir>/worker-bin`, first on `PATH`: `gh` runs the agent's CLI; `lark-cli` runs the bot's CLI; blocked commands fail. A shim removes its own directory from `PATH` before it runs its target.
-- **git configuration** in `<stateDir>/worker-gitconfig`: replaces the operator's global and system git configuration. It selects the agent CLI as the github.com credential helper, rewrites GitHub SSH addresses to HTTPS and defines Git LFS filters. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN` and `GITHUB_TOKEN` are removed.
+- **Command shims** in `<stateDir>/worker-bin`, which the shared dispatchers run for the instance's Sessions: `gh` runs the agent's CLI; `lark-cli` runs the bot's CLI; blocked commands fail. A dispatcher removes its directory from `PATH`, and a shim its own, before it runs its target, so an account wrapper that calls `gh` by name reaches the real one.
+- **git configuration** in `<stateDir>/worker-gitconfig`, which dsh-superagent's own git commands use; workers' git uses the same configuration in the shared directory, with the `gh` dispatcher as helper. It replaces the operator's global and system git configuration. It selects the agent CLI as the github.com credential helper, rewrites GitHub SSH addresses to HTTPS and defines Git LFS filters. Personal git settings such as an HTTP proxy do not apply. No commit identity is set here, git never prompts for credentials, and `GH_TOKEN` and `GITHUB_TOKEN` are removed from the process.
 
-A file in `worker-bin` or `worker-gitconfig` that dsh-superagent did not write stops setup. A Ticket directory inside a git repository whose own configuration adds credentials fails the Ticket.
+A file in `worker-bin`, `worker-gitconfig` or the shared directory's `bin` and `gitconfig` that dsh-superagent did not write stops setup, or, in the shared directory, the shared worker environment and so every instance. A Ticket directory inside a git repository whose own configuration adds credentials fails the Ticket.
 
 ## Try it
 
@@ -289,6 +316,8 @@ Setup problems appear on the overview with a link to the fix, in the panel's lan
 | `git does not read the github.com credential configuration dsh-superagent writes` | Install git 2.32 or later |
 | A Ticket fails with `The git configuration of the repository in … sets …` | Remove the named credential or `http.*.extraheader` settings from the clone's `.git/config` |
 | `… was not written by dsh-superagent` | Move the named file out of `<stateDir>/worker-bin` or `<stateDir>/worker-gitconfig`, or choose another `stateDir` |
+| `gh is unavailable …`, `lark-cli is unavailable …` or a blocked command `is unavailable …` | A dispatcher of the shared worker environment found no instance to act as; the message says why, as listed under Shared worker environment. Run the command from the instance's Session, or wait for its setup or restart |
+| `Another DSH process uses …/.dsh-superagent-workers for dsh-superagent workers` (log) | A second process of the profile runs; stop it. No instance starts in a process whose shared worker environment did not start |
 | `The bot lark-cli allows user identities` | Point the Feishu Source at a bot-only configuration, as in Feishu bot above |
 | `The bot lark-cli does not work.` or `The bot identity of app … is …` | Check the configuration's app id and secret |
 | `The Feishu bot is not a member of the chat.` | Add the bot to the chat in the chat's settings; the next attempt succeeds |

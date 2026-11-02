@@ -126,8 +126,8 @@ export class Sessions {
     // its first turn DSH refuses any selection, which leaves it as it is.
     ctx.inject(['agentPresets'], child => {
       child.on('agent-preset/selected', (sessionId, preset) => {
-        const ticketId = ticketOfSession(sessionId), agent = ctx.agents.get(sessionId as SessionId)
-        const ours = sessionId === this.host.masterId ? ROUTER_PRESET : ticketId && this.host.store.tickets.get(ticketId) ? WORKER_PRESET : undefined
+        const agent = ctx.agents.get(sessionId as SessionId)
+        const ours = sessionId === this.host.masterId ? ROUTER_PRESET : this.ownsWorker(sessionId) ? WORKER_PRESET : undefined
         if (!ours || preset === ours || !agent) return
         const presets = child.get('agentPresets') as { select(agent: Agent, preset: string): Promise<string> }
         presets.select(agent, ours).catch(() => {})
@@ -172,7 +172,7 @@ export class Sessions {
     try {
       const root = await realpath(this.host.executionRoot()).catch(() => undefined)
       if (!root) return
-      const ours = (sessionId: string) => { const ticketId = ticketOfSession(sessionId); return !!ticketId && !!this.host.store.tickets.get(ticketId) }
+      const ours = (sessionId: string) => this.ownsWorker(sessionId)
       for (const workspace of ctx.workspaceRegistry.list()) {
         if (dirname(workspace.path) !== root || workspace.path === root) continue
         const sessionIds: readonly string[] = workspace.sessionIds
@@ -184,6 +184,11 @@ export class Sessions {
     } catch (error) {
       ctx.logger.warn('dsh-superagent could not remove the workspace registrations of its Ticket directories: %s', String(error))
     }
+  }
+  /** True for the worker Session (`worker-<ticketId>`) of a Ticket in this instance's store. */
+  ownsWorker(sessionId: string): boolean {
+    const ticketId = ticketOfSession(sessionId)
+    return ticketId !== undefined && this.host.store.tickets.get(ticketId) !== undefined
   }
   /** Returns whether `sessionId` already holds the message delivered under `requestId`, or `false` if the session does not exist. */
   async holds(sessionId: string, requestId: string): Promise<boolean> {

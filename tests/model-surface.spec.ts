@@ -17,12 +17,12 @@ import { workerSessionId } from '../src/executor/dsh.ts'
 import { Store } from '../src/app/store.ts'
 import { Commands } from '../src/infra/commands.ts'
 import { inputMessage } from '../src/executor/dsh.ts'
-import { credentialHelper, workerGitConfig } from '../src/infra/environment.ts'
+import { credentialHelper } from '../src/infra/environment.ts'
 import { IM_WORDS, NOTE_WORDS, checkedImText } from '../src/infra/text.ts'
 import { SettingsSchema } from '../src/policy.ts'
 import { feishuKind, feishuTrigger } from '../src/sources/feishu.ts'
 import { githubKind } from '../src/sources/github.ts'
-import { testMachine } from './fixtures/deployment.ts'
+import { testMachine, testWorkers, workerAnswers } from './fixtures/deployment.ts'
 
 type Role = 'orchestrator' | 'worker'
 interface Surface { where: string; owner: string; role: Role | 'both'; text: string }
@@ -69,6 +69,7 @@ const words = (count: number) => Array.from({ length: count }, () => 'word').joi
 /** Start a configured Runtime on a fake DSH host (as in tests/runtime.spec.ts) that records registered tools, prompts, skills, and delivered messages per session. */
 async function start() {
   const directory = mkdtempSync(join(tmpdir(), 'model-surface-'))
+  const workers = await testWorkers(join(directory, 'shared-workers'))
   const AGENT = join(directory, 'agent-gh'), BOT = join(directory, 'lark-bot')
   for (const cli of [AGENT, BOT]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
   const repository = { default_branch: 'master', permissions: { push: true } }
@@ -84,7 +85,7 @@ async function start() {
     [`${BOT} auth status`]: JSON.stringify({ appId: 'cli_bot', brand: 'feishu', identities: { bot: { status: 'ready' } } }),
     [`${BOT} config strict-mode`]: 'strict-mode: bot (source: profile)',
     [`${BOT} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',
-    ['git config -z --show-origin --get-all credential.https://github.com.helper']: `file:${workerGitConfig(directory)}\0${credentialHelper(AGENT)}\0`,
+    ...workerAnswers(workers.shared, directory),
     ['git config -z --show-scope --get-regexp ^(credential\\..*|http\\..*extraheader)$']:
       `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(AGENT)}\0`,
   }
@@ -140,7 +141,7 @@ async function start() {
   const github = { enabled: true, config: { repository: 'acme/widgets', cli: AGENT } }
   seed.saveSettings(SettingsSchema.parse({ ...seed.settings(), sources: { github, feishu: { enabled: true, config: { cli: BOT } } } }))
   seed.close()
-  const runtime = new Runtime(ctx, testMachine({ stateDir: directory }), () => {})
+  const runtime = new Runtime(ctx, testMachine({ stateDir: directory }), () => {}, workers)
   await runtime.ready
   runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
   const settings = runtime.store.settings()
@@ -150,7 +151,7 @@ async function start() {
     sources: { ...settings.sources, feishu: feishuSource } })
   const run = async (sessionId: string, name: string, args: unknown) =>
     await tools.get(sessionId)!.get(name)!.execute(args, { signal: new AbortController().signal }) as Record<string, unknown>
-  const stop = async () => { await runtime.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) }
+  const stop = async () => { await runtime.stop(); await workers.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) }
   return { ctx, runtime, agents, tools, sections, skills, inputs, run, stop }
 }
 type Host = Awaited<ReturnType<typeof start>>

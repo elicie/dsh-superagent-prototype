@@ -44,7 +44,7 @@ it('shows Korean names and dedicated-session warnings for both managed presets',
 
 it('defines the worker preset Executor Sessions run under, with a shell that moves long commands to the background', async () => {
   const rows = await patched()
-  expect(rows.map(row => row.id)).toEqual(['dsh-superagent', 'dsh-superagent-subscriptions', 'dsh-superagent-github', 'dsh-superagent-feishu', 'dsh-superagent-worker-preset',
+  expect(rows.map(row => row.id)).toEqual(['dsh-superagent-worker-env', 'dsh-superagent', 'dsh-superagent-subscriptions', 'dsh-superagent-github', 'dsh-superagent-feishu', 'dsh-superagent-worker-preset',
     'dsh-superagent-router-preset'])
   const preset = presetOf(rows, WORKER_PRESET)
   expect(preset.id).toBe(WORKER_PRESET)
@@ -86,4 +86,17 @@ it('defines the router preset the main Session runs under: the worker\'s 5-secon
     '@deepseek-ai/dsh-tool-todo', '@deepseek-ai/dsh-tool-ask-user', '@deepseek-ai/dsh-tool-present', '@deepseek-ai/dsh-plan-mode',
     '@deepseek-ai/dsh-plugin-manager/tools', '@deepseek-ai/dsh-plugin-market/tools', '@deepseek-ai/dsh-tool-schedule', '@deepseek-ai/dsh-tool-goal',
     '@deepseek-ai/dsh-command-goal', '@deepseek-ai/dsh-tool-workflow', '@deepseek-ai/dsh-workflow-ptc']) expect(names, name).not.toContain(name)
+})
+
+it('inserts the shared worker environment at the root, outside any group and before dsh-superagent, which injects it', async () => {
+  const rows = await patched()
+  const index = rows.findIndex(row => row.id === 'dsh-superagent-worker-env')
+  expect(rows[index]).toEqual({ id: 'dsh-superagent-worker-env', name: 'dsh-superagent/worker-env' })
+  expect(index).toBeLessThan(rows.findIndex(row => row.id === 'dsh-superagent'))
+  // Only the root list holds it: no group or preset row of the patch does.
+  expect(flat(rows).filter(row => row.name === 'dsh-superagent/worker-env')).toHaveLength(1)
+  const { inject } = await import('../src/index.ts')
+  expect(inject).toContain('superagentWorkers')
+  const manifest = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { exports: Record<string, unknown> }
+  expect(manifest.exports['./worker-env']).toEqual({ types: './lib/worker-env.d.ts', default: './lib/worker-env.js' })
 })

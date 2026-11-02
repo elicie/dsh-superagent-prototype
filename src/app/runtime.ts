@@ -43,6 +43,7 @@ import { health, type Health, type SourceContext, type SourceHost } from '../sou
 import { Sessions } from './sessions.ts'
 import { Settings } from './settings.ts'
 import { sourceContextOf, type SourceContextDeps } from './source-context.ts'
+import type { WorkerMembership, Workers } from '../worker-env.ts'
 import type { ResourceHost } from './resources.ts'
 import { mainTools, type MainToolsHost } from './tools/main.ts'
 import { executorTools, type ExecutorToolsHost } from './tools/executor.ts'
@@ -78,13 +79,16 @@ export class Runtime extends Service implements SourceHost {
   private readonly stopped = new AbortController()
   private readonly disposers: (() => void)[] = []
   private releaseLock?: () => Promise<void>
+  /** This instance's registration with the shared worker environment, released last on stop. */
+  private readonly workers: WorkerMembership
   private closingFlag = false
   private stopping?: Promise<void>
   private readonly sourceDeps: SourceContextDeps
   private readonly toolHost: MainToolsHost & ExecutorToolsHost
   /** Non-zero while a main-Session tool is executing an Engine command, suppressing self-triggered domain event notices. */
   private quiet = 0
-  constructor(ctx: Context, readonly machine: Machine, restart: () => void) {
+  /** @param workers - the shared worker environment (src/worker-env.ts), which this instance registers with and which alone changes `process.env`. */
+  constructor(ctx: Context, readonly machine: Machine, restart: () => void, workers: Workers) {
     super(ctx, 'orchestrator')
     const runtime = this
     // Lock the state directory before opening the database so another process cannot migrate or write concurrently.
@@ -93,10 +97,13 @@ export class Runtime extends Service implements SourceHost {
     const release = lockSync(machine.stateDir, { stale: 30_000, onCompromised: compromised })
     this.releaseLock = async () => { release() }
     let opened: Store | undefined
+    let joined: WorkerMembership | undefined
     try {
       const report = (error: unknown) => { ctx.logger.warn('dsh-superagent: %s', String(error)) }
       const store = opened = this.store = new Store(join(machine.stateDir, 'orchestrator.sqlite'), report)
-      const setup = this.setup = new Setup({ context: ctx, machine, lifetime: this.lifetime, restart })
+      // Shells of this instance's Sessions reach its shims once setup marks it configured; until then they fail.
+      joined = this.workers = workers.join({ stateDir: machine.stateDir, owns: sessionId => this.owns(sessionId) })
+      const setup = this.setup = new Setup({ context: ctx, machine, lifetime: this.lifetime, workers: joined, restart })
       const deployed = () => setup.configured()
         ? environmentOf({ deployment: setup.deployment, sources: this.sources, settings: store.settings() }) : undefined
       const feishu = () => setup.configured() && !!setup.deployment.feishu
@@ -166,6 +173,7 @@ export class Runtime extends Service implements SourceHost {
       this.ready = this.initialize()
     } catch (error) {
       // Release the database and state lock if initialization fails so an in-process restart can reacquire them.
+      void joined?.release()
       try { opened?.close() } finally { release() }
       throw error
     }
@@ -191,6 +199,8 @@ export class Runtime extends Service implements SourceHost {
     return ticketEnvironment({ deployment, sources, settings: this.store.settings(), ticket, ...trigger ? { trigger } : {} })
   }
   checkSetup(): void { this.setup.check() }
+  /** True for this instance's main Session and the worker Sessions of its Tickets, whose shells use its accounts. */
+  owns(sessionId: string): boolean { return sessionId === this.masterId || this.sessions.ownsWorker(sessionId) }
   receive(trigger: Trigger): ReceiveResult { return this.passes.receive(trigger) }
   idle(): Promise<void> { return this.passes.idle() }
   pump(): Promise<void> { return this.passes.pump() }
@@ -244,7 +254,8 @@ export class Runtime extends Service implements SourceHost {
       await this.ctx.sessionPersistence.flush()
     } finally {
       // Close the database before releasing the directory lock so another process cannot open the database mid-write; a compromised lock may already be released.
-      this.setup.restore()
+      // Workers stopped above. From here the dispatchers fail for this instance's Sessions; the process environment stays as the shared worker environment set it.
+      await this.workers.release()
       try { this.store.close() } finally {
         const unreleased = (error: unknown) => { this.ctx.logger.warn('dsh-superagent could not release its state directory lock: %s',
           String(error)) }

@@ -12,7 +12,8 @@ import { jobRegistry } from './fixtures/host.ts'
 import { evalsHealth } from '../src/app/views/overview.ts'
 import { mandateInstructions } from '../src/executor/dsh.ts'
 import { masterPrompt } from '../src/app/context.ts'
-import { reference, testMachine } from './fixtures/deployment.ts'
+import { reference, testMachine, testWorkers, workerAnswers } from './fixtures/deployment.ts'
+import type { WorkerRegistry } from '../src/worker-env.ts'
 import type { Machine } from '../src/deployment.ts'
 import { SCHEMA_VERSION, Store } from '../src/app/store.ts'
 import { TextCache } from '../src/app/cache.ts'
@@ -75,6 +76,9 @@ async function receive(trigger: Trigger, target = runtime) {
   return result
 }
 let services: Record<string, unknown>
+/** The shared worker environment the runtimes join, and the copy of the process environment it applies to. */
+let workers: WorkerRegistry
+let workerEnv: Record<string, string | undefined>
 /** DSH's job registry the Runtime's Executor reads its workers' shell jobs from. */
 let jobs: ReturnType<typeof jobRegistry>
 /** What worker commands of the startup checks print, by argv; an Error makes the command fail with its message. */
@@ -107,7 +111,7 @@ async function restart(machine: Partial<Machine> = {}, accounts: Accounts = {}):
   const store = new Store(join(directory, 'orchestrator.sqlite')); seed(store, accounts); store.close()
   const ctx = new Context()
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
-  runtime = new Runtime(ctx, testMachine({ stateDir: directory, ...machine }), restarts)
+  runtime = new Runtime(ctx, testMachine({ stateDir: directory, ...machine }), restarts, workers)
   return runtime
 }
 let deliveries: ReturnType<typeof vi.fn<(request: { sessionId: string; mode: 'queue' | 'steer'; id: string; text: string }) => void>>
@@ -136,6 +140,8 @@ async function acceptedTicket(trigger = feishu('1', '@bot 修一下回归')) {
 }
 beforeEach(async () => {
   directory = mkdtempSync(join(tmpdir(), 'orchestrator-runtime-'))
+  workerEnv = { ...process.env }
+  workers = await testWorkers(join(directory, 'shared-workers'), workerEnv)
   vi.spyOn(Commands.prototype, 'gh').mockImplementation(async args => args[1] === 'user' ? { login: 'agent-bot' } : args[1]?.includes('/pulls/') ? { state: 'open', user: { login: 'agent-bot' }, html_url: 'https://github.com/acme/widgets/pull/' + args[1].split('/').at(-1), head: { ref: `agent/${String(runtime.store.tickets.list()[0]?.execution?.name)}`, sha: 'head-1', repo: { full_name: 'acme/widgets' } } } : { default_branch: 'master', permissions: { push: true } })
   vi.spyOn(Commands.prototype, 'lark').mockResolvedValue({ users: [{ member_id: MEMBER, name: 'Alice' }], has_more: false })
   vi.spyOn(Commands.prototype, 'git').mockResolvedValue('')
@@ -149,7 +155,7 @@ beforeEach(async () => {
     [`${BOT()} auth status`]: JSON.stringify({ appId: 'cli_bot', brand: 'feishu', identities: { bot: { status: 'ready' } } }),
     [`${BOT()} config strict-mode`]: 'strict-mode: bot (source: profile)',
     [`${BOT()} api GET /open-apis/bot/v3/info --as bot --format ndjson`]: '{"bot":{"open_id":"ou_bot"},"code":0,"msg":"ok"}',
-    [HELPERS]: `file:${workerGitConfig(directory)}\0${credentialHelper(AGENT())}\0`,
+    ...workerAnswers(workers.shared, directory),
     [SCOPED]: `global\0credential.helper\n\0global\0credential.https://github.com.helper\n${credentialHelper(AGENT())}\0`,
   }
   const ctx = new Context()
@@ -207,14 +213,14 @@ beforeEach(async () => {
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
   for (const cli of [AGENT(), OTHER(), BOT()]) writeFileSync(cli, '#!/bin/sh\n', { mode: 0o755 })
   const store = new Store(join(directory, 'orchestrator.sqlite')); seed(store); store.close()
-  runtime = new Runtime(ctx, testMachine({ stateDir: directory }), restarts)
+  runtime = new Runtime(ctx, testMachine({ stateDir: directory }), restarts, workers)
   await runtime.ready
   // Source kinds are normally registered by plugins that are not loaded in unit tests.
   runtime.sources.register(feishuKind); runtime.sources.register(githubKind)
   runtime.store.saveSettings({ ...runtime.store.settings(), policy: { ...runtime.store.settings().policy, sources: { feishu: { allowed: [{ id: MEMBER, name: 'Alice' }], syncChat: CHAT }, github: { allowed: [{ id: 'alice' }] } } }, eval: { ...runtime.store.settings().eval, mode: 'auto' }, sources: { github: { enabled: true, config: { repository: 'acme/widgets', cli: AGENT() } }, feishu: { enabled: true, config: { cli: BOT(), chats: [{ chatId: CHAT, listen: 'all' }], directMessages: true } } } })
   deliveries.mockClear()
 })
-afterEach(async () => { expect(controller.prompt).not.toHaveBeenCalled(); await runtime?.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) })
+afterEach(async () => { expect(controller.prompt).not.toHaveBeenCalled(); await runtime?.stop(); await workers.stop(); vi.restoreAllMocks(); rmSync(directory, { recursive: true, force: true }) })
 
 it('relays an explicit member mention as a candidate and creates the ticket, acknowledgement, subscription and worker on accept', async () => {
   const { trigger, ticket, sessionId } = await acceptedTicket()
@@ -849,11 +855,15 @@ it('reports each setup problem where the operator fixes it, and checks the agent
   answers[`${AGENT()} api repos/acme/widgets --jq {name: .full_name, push: .permissions.push}`] = '{"name":"acme/widgets","push":false}\n'
   await needs('github', 'repositoryReadOnly', { account: 'agent-bot', repository: 'acme/widgets' })
   answers[`${AGENT()} api repos/acme/widgets --jq {name: .full_name, push: .permissions.push}`] = '{"name":"acme/widgets","push":true}\n'
-  // The agent CLI runs in the workers' environment: without the shims on PATH.
-  const check = subprocess.spawn.mock.calls.map(([spec]) => spec.argv).find(argv => argv.includes(AGENT()))!
+  // The agent CLI runs in the workers' environment: without the shims or the shared dispatchers on PATH, and with the
+  // instance's DSH_SUPERAGENT_WORKER_BIN for git.
+  const spec = subprocess.spawn.mock.calls.map(([spec]) => spec as { argv: string[]; env?: Record<string, string> }).findLast(spec => spec.argv.includes(AGENT()))!
+  const check = spec.argv
   expect(check[0]).toBe('env')
   expect(check[1]!.startsWith('PATH=')).toBe(true)
   expect(check[1]!.slice('PATH='.length).split(':')).not.toContain(join(directory, 'worker-bin'))
+  expect(check[1]!.slice('PATH='.length).split(':')).not.toContain(workers.shared.bin)
+  expect(spec.env).toEqual({ DSH_SUPERAGENT_WORKER_BIN: join(directory, 'worker-bin') })
   const valid = { ...answers }
   // git older than 2.32 ignores GIT_CONFIG_GLOBAL and reads the operator's configuration.
   answers = { ...valid, [HELPERS]: 'file:/home/me/.gitconfig\0!gh auth git-credential\0' }
@@ -873,12 +883,13 @@ it('reports a failure to write the agent environment as environmentFailed and le
   // The shim directory cannot be made: a file has its name.
   rmSync(join(directory, 'worker-bin'), { recursive: true, force: true })
   writeFileSync(join(directory, 'worker-bin'), '')
-  const environment = { ...process.env }
+  const environment = { ...process.env }, shared = { ...workerEnv }
   const next = await restart()
   await next.ready
   expect(next.setupProblem).toMatchObject({ place: 'deployment', code: 'environmentFailed',
     values: { output: expect.stringContaining('EEXIST') } })
   expect(process.env).toEqual(environment)
+  expect(workerEnv).toEqual(shared)
 })
 
 it('checks only the account a Source save changes, so a problem setup has elsewhere does not refuse it', async () => {
@@ -954,7 +965,7 @@ it('pauses and resumes processing as its own action, a setting outside every blo
   expect(runtime.store.settings().paused).toBe(false)
 })
 
-it('runs setup again while the Feishu bot check failed, and restores the process environment when git fails its check', async () => {
+it('runs setup again while the Feishu bot check failed, and takes its registration back when git or gh fails its check', async () => {
   answers[`${BOT()} config strict-mode`] = 'strict-mode: off (source: profile)'
   const next = await restart()
   await next.ready
@@ -966,8 +977,17 @@ it('runs setup again while the Feishu bot check failed, and restores the process
   const broken = await restart()
   await broken.ready
   expect(broken.setupProblem).toMatchObject({ place: 'deployment', code: 'gitTooOld' })
-  expect(process.env.GIT_CONFIG_GLOBAL).toBeUndefined()
-  expect(process.env.PATH?.split(':')).not.toContain(join(directory, 'worker-bin'))
+  // The failed check takes the instance's registration back: the dispatchers no longer run its shims, and the shared
+  // environment stays as it was.
+  const applied = { ...workerEnv }
+  expect(applied.PATH?.split(':')[0]).toBe(workers.shared.bin)
+  expect(readFileSync(join(workers.shared.bin, 'gh'), 'utf8')).not.toContain(join(directory, 'worker-bin'))
+  // So does a gh that does not reach this instance's shim through the dispatcher.
+  answers = { ...answers, ...workerAnswers(workers.shared, directory), gh: '/usr/bin/gh\n' }
+  const astray = await restart()
+  await astray.ready
+  expect(astray.setupProblem).toMatchObject({ place: 'deployment', code: 'environmentFailed', values: { output: `A worker's gh runs /usr/bin/gh, not ${join(directory, 'worker-bin', 'gh')}.` } })
+  expect(workerEnv).toEqual(applied)
 })
 
 it('writes worker shims and the agent environment from the configuration only, and restores the environment on stop', async () => {
@@ -982,12 +1002,40 @@ it('writes worker shims and the agent environment from the configuration only, a
   expect(readFileSync(join(bin, 'lark-cli'), 'utf8')).toContain('lark-cli is unavailable: this installation has no Feishu bot.')
   expect(readFileSync(join(bin, 'gh'), 'utf8')).toContain(`exec '${AGENT()}'`)
   expect(readFileSync(workerGitConfig(directory), 'utf8')).toContain(`[credential "https://github.com"]\n\thelper = "${credentialHelper(AGENT())}"`)
-  expect(process.env).toMatchObject({ GIT_CONFIG_GLOBAL: workerGitConfig(directory), GIT_CONFIG_NOSYSTEM: '1' })
-  expect(process.env.GIT_AUTHOR_NAME).toBeUndefined()
-  expect(process.env.PATH?.split(':')[0]).toBe(bin)
+  // The shared environment, not the instance, sets the process's variables: the dispatchers first on PATH and the shared git
+  // configuration, whose helper is the gh dispatcher; the dispatchers run this instance's shims, blocked ones included.
+  const shared = workers.shared
+  expect(workerEnv).toMatchObject({ GIT_CONFIG_GLOBAL: shared.gitconfig, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '' })
+  expect(workerEnv.GIT_AUTHOR_NAME).toBeUndefined()
+  expect(workerEnv.PATH?.split(':')[0]).toBe(shared.bin)
+  expect(workerEnv.PATH?.split(':')).not.toContain(bin)
+  expect(readdirSync(shared.bin).sort()).toEqual(['gh', 'lark-cli', 'personal-gh'])
+  expect(readFileSync(join(shared.bin, 'personal-gh'), 'utf8')).toContain(`else bin='${bin}'`)
+  expect(readFileSync(shared.gitconfig, 'utf8')).toContain(`[credential "https://github.com"]\n\thelper = "${credentialHelper(join(shared.bin, 'gh'))}"`)
+  // Its stop changes neither the process environment nor the commands dispatched, which now fail: no instance answers for them.
+  const applied = { ...workerEnv }
   await next.stop()
-  expect(process.env.GIT_CONFIG_GLOBAL).toBeUndefined()
-  expect(process.env.PATH?.split(':')).not.toContain(bin)
+  expect(workerEnv).toEqual(applied)
+  expect(readdirSync(shared.bin).sort()).toEqual(['gh', 'lark-cli', 'personal-gh'])
+  expect(readFileSync(join(shared.bin, 'personal-gh'), 'utf8')).not.toContain(bin)
+  // Only the shared environment's own stop restores the process environment.
+  await workers.stop()
+  expect(workerEnv.GIT_CONFIG_GLOBAL).toBe(process.env.GIT_CONFIG_GLOBAL)
+  expect(workerEnv.PATH).toBe(process.env.PATH)
+})
+
+it('leaves the process environment as the shared worker environment set it while an instance configures, restarts and stops', async () => {
+  const environment = { ...process.env }, applied = { ...workerEnv }
+  expect(applied).toMatchObject({ GIT_CONFIG_GLOBAL: workers.shared.gitconfig, PATH: expect.stringMatching(new RegExp(`^${workers.shared.bin}:`)) })
+  const next = await restart()
+  await next.ready
+  expect(next.configured()).toBe(true)
+  expect(workerEnv).toEqual(applied)
+  await next.settings.save('executor', { ...next.store.settings().executor, blockedCommands: ['personal-gh'] }, next.store.blockRevision('executor'), 'panel')
+  expect(workerEnv).toEqual(applied)
+  await next.stop()
+  expect(workerEnv).toEqual(applied)
+  expect(process.env).toEqual(environment)
 })
 
 it('waits for setup when the shim directory holds a file dsh-superagent did not write, and leaves the file alone', async () => {
@@ -1005,8 +1053,11 @@ it('rewrites the blocked-command shims when the Executor settings change them, w
   const save = (blockedCommands: string[]) => runtime.settings.save('executor', { ...runtime.store.settings().executor, blockedCommands }, runtime.store.blockRevision('executor'), 'panel')
   expect(await save(['personal-gh'])).toMatchObject({ saved: true, restarting: false })
   expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli', 'personal-gh'])
+  expect(readdirSync(workers.shared.bin).sort()).toEqual(['gh', 'lark-cli', 'personal-gh'])
   await save([])
   expect(readdirSync(bin).sort()).toEqual(['gh', 'lark-cli'])
+  // The dispatcher stays and runs the real command for this instance, which no longer blocks it.
+  expect(readdirSync(workers.shared.bin).sort()).toEqual(['gh', 'lark-cli', 'personal-gh'])
   // The commands workers need cannot be blocked.
   await expect(save(['gh'])).rejects.toThrow()
   expect(restarts).not.toHaveBeenCalled()
@@ -1082,7 +1133,12 @@ it('runs the prepare command once for a new ticket, under the execution root wit
   prepare('git -C /srv/widgets worktree add "$DSH_SUPERAGENT_DIR" -b "agent/$DSH_SUPERAGENT_NAME"')
   const { ticket } = await acceptedTicket()
   expect(runs()).toEqual([expect.objectContaining({ argv: ['sh', '-c', 'git -C /srv/widgets worktree add "$DSH_SUPERAGENT_DIR" -b "agent/$DSH_SUPERAGENT_NAME"'], cwd: join(directory, 'work'),
-    env: expect.objectContaining({ DSH_SUPERAGENT_DIR: ticket.execution!.directory, DSH_SUPERAGENT_NAME: ticket.execution!.name, DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets', DSH_SUPERAGENT_FEISHU_CHAT: CHAT }) })])
+    env: expect.objectContaining({ DSH_SUPERAGENT_DIR: ticket.execution!.directory, DSH_SUPERAGENT_NAME: ticket.execution!.name, DSH_SUPERAGENT_GITHUB_REPOSITORY: 'acme/widgets', DSH_SUPERAGENT_FEISHU_CHAT: CHAT,
+      // Its git and gh reach this instance's shims through the shared dispatchers, as do the directory check's.
+      DSH_SUPERAGENT_WORKER_BIN: join(directory, 'worker-bin') }) })])
+  const check = subprocess.spawn.mock.calls.map(([spec]) => spec as { argv: string[]; cwd: string; env?: Record<string, string> })
+    .find(spec => spec.argv.join(' ') === SCOPED && spec.cwd === ticket.execution!.directory)!
+  expect(check.env).toEqual({ DSH_SUPERAGENT_WORKER_BIN: join(directory, 'worker-bin') })
   // A retry reuses the prepared directory.
   await runTool(`worker-${ticket.id}`, 'orchestrator_report', { state: 'failed', summary: 'offline' })
   await runtime.engine.retryTicket(ticket.id)
@@ -1372,7 +1428,7 @@ it('refuses a second process on the same state directory before it opens the dat
   db.close()
   const ctx = new Context()
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
-  expect(() => new Runtime(ctx, testMachine({ stateDir: directory }), vi.fn())).toThrow(/already being held/)
+  expect(() => new Runtime(ctx, testMachine({ stateDir: directory }), vi.fn(), workers)).toThrow(/already being held/)
   expect(runtime.store.get(KV.store.schema)).toBe(10)
   runtime.store.set(KV.store.schema, SCHEMA_VERSION)
 })
@@ -1407,12 +1463,12 @@ it('releases the database and the state directory lock when it fails to start, s
   db.prepare("UPDATE kv SET value='99' WHERE key='schema'").run()
   db.close()
   const context = () => { const ctx = new Context(); for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service); return ctx }
-  expect(() => new Runtime(context(), testMachine({ stateDir: directory }), vi.fn())).toThrow('Unsupported orchestrator database version 99')
+  expect(() => new Runtime(context(), testMachine({ stateDir: directory }), vi.fn(), workers)).toThrow('Unsupported orchestrator database version 99')
   const fixed = new DatabaseSync(join(directory, 'orchestrator.sqlite'))
   fixed.prepare('UPDATE kv SET value=? WHERE key=?').run(String(SCHEMA_VERSION), 'schema')
   fixed.close()
   // A lock kept by the failed start would make this throw that the lock is already held.
-  runtime = new Runtime(context(), testMachine({ stateDir: directory }), vi.fn())
+  runtime = new Runtime(context(), testMachine({ stateDir: directory }), vi.fn(), workers)
   await runtime.ready
   expect(runtime.store.get(KV.store.schema)).toBe(SCHEMA_VERSION)
 })
