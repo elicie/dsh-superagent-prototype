@@ -344,6 +344,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/app/tools/executor.ts` | An Executor Session's tools |
 | `src/app/http.ts` | The `/orchestrator/api` routes: the same-origin check, request limits and one status per kind of failure |
 | `src/app/api.ts` | `Api`, every route with its parameters, query, body and response, and the filters of the lists; it imports only types, so the panel bundles it |
+| `src/subscriptions.ts` | Independently mounted same-origin subscription HTTP routes and their bounded request parsing |
+| `src/app/subscriptions.ts` | Native xAI OAuth attempt lifecycle, credential-free status, explicit provider activation and local sign-out |
+| `src/app/subscriptions-api.ts` | Browser-safe subscription status, attempt phases, sanitized failure codes and shared xAI verification-link validation |
 | `src/app/views/text.ts` | The two forms of a view's text: `preview`, plain text on one line, and `markdown` without HTML; `plain` and `readable` |
 | `src/app/views/records.ts` | The rows the views share: Triggers, Tickets, Threads, Decisions and Channel links, and `ownersOf`, the owners of follow-ups as one request reads them |
 | `src/app/views/tickets.ts` | The Ticket lists by stage, a Ticket's page, the Mandate basis facts and the Executor's load |
@@ -402,9 +405,11 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/host-ko/management.ts` | Korean plugin, automation and advanced-settings copy |
 | `src/client/host-ko/tools.ts` | Korean tool, execution, document and auxiliary UI copy |
 | `src/client/host-ko/mobile.css` | Narrow-screen host settings layout for readable Korean labels |
+| `src/client/grok.tsx`, `grok.css` | Grok subscription controls inside xAI's add-provider draft and configured provider row, including device-code sign-in, cancellation and explicit activation |
+| `src/client/model-settings.d.ts` | Compatibility declaration for the host's provider-card slot and owner props |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
-`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
+`src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts four plugins, including the independent subscription routes, with Feishu disabled.
 
 ## Tests
 
@@ -451,6 +456,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/panel-korean.spec.tsx` | Korean navigation, glossary, Source metadata, search, settings saves, shared pause state and error messages |
 | `tests/locales.spec.ts`, `tests/styles.spec.ts` | English, Chinese and Korean key and placeholder coverage, localized metadata and timestamps, the stylesheet |
 | `tests/host-locales.spec.ts` | Complete host Korean namespace, key and placeholder coverage against `tests/fixtures/host-locale-contract.json` for the supported DSH release |
+| `tests/subscriptions.spec.ts` | Native OAuth lifecycle, redacted responses, xAI activation and same-origin subscription route guards |
+| `tests/grok.spec.tsx` | Subscription card sign-in, cancellation, expiry, retry, confirmation, copy feedback and stale-response handling |
 | `tests/class-docs.spec.ts` | Every class in `src` has a JSDoc block before it |
 | `tests/docs.spec.ts` | Numbered documents link only to earlier ones, every local link resolves, no document has merge conflict markers, and this document's tables list every module and every test |
 

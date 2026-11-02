@@ -34,6 +34,10 @@ Read the numbered documents in order; each builds only on the ones before it.
 
 한국어 화면을 사용하려면 DeepSeek Harness의 **Settings → General → Language**(**설정 → 일반 → 언어**)에서 **한국어**를 선택하세요. Superagent 패널과 함께 사이드바, 대화 화면, 전체 설정, 플러그인·도구 화면을 한국어로 표시합니다. 공통 화면 번역은 DSH 0.2.1-rc.3 기준이며, 이후 추가된 문구와 한국어 메타데이터가 없는 패키지 이름은 영어로 표시될 수 있습니다. 사용자 메시지와 에이전트 프롬프트 원문은 유지됩니다.
 
+## Grok subscription
+
+**설정 → 모델 → 모델 제공업체 추가 → 외부 모델 제공업체**에서 제공업체 **xai**를 선택하면 **Grok 구독**이 나타납니다. **Grok으로 로그인**을 누르면 xAI 인증 창이 열립니다. 새 창에서 코드를 승인하세요. 팝업이 차단되면 **xAI 로그인 열기** 링크로 계속할 수 있습니다. 로그인 완료 후 **xAI 모델에 구독 사용**을 눌러 제공업체를 활성화하고, 판단·실행기 모델 또는 대화창 모델 선택기에서 Grok 모델을 선택합니다. DSH의 네이티브 OAuth·인증 정보 저장소를 사용하며 기존 API 키 설정은 유지합니다. 실제 이용 권한과 모델 호출은 로그인 후 확인해야 합니다. 자세한 인증·취소·로그아웃 및 배포 접근 제한은 [패널 안내](docs/005-panel.md#grok-subscription-sign-in)를 참고하세요.
+
 ## Development
 
 `pnpm check` runs the typecheck, the tests and the build.

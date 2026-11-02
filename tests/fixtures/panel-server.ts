@@ -372,6 +372,12 @@ const ROUTES: { [K in keyof Api]: Route<K> } = {
   'GET models': { answer: () => ({ default: { provider: 'host', model: 'default' }, routableProviders: [], failures: [],
     groups: [{ id: 'worker-provider', name: 'Worker provider', models: [{ id: 'worker-model', name: 'Worker model',
       reasoning: { efforts: [{ id: 'high', name: 'High' }] } }] }] }) },
+  'GET subscriptions/grok': { answer: () => ({ available: false, writable: false, connected: false, busy: false,
+    credential: 'none', route: 'unconfigured', canActivate: false }) },
+  'POST subscriptions/grok/start': { body: true, answer: () => refuse(500, 'Subscription sign-in unavailable') },
+  'POST subscriptions/grok/cancel': { body: true, answer: () => refuse(500, 'Subscription sign-in unavailable') },
+  'POST subscriptions/grok/activate': { body: true, answer: () => refuse(500, 'Subscription sign-in unavailable') },
+  'POST subscriptions/grok/logout': { body: true, answer: () => refuse(500, 'Subscription sign-in unavailable') },
   'GET prompts': { query: ['revision', 'offset'], answer: () => server.prompts },
   'PUT prompts': { body: true, answer: ({ body }) => {
     const { revision } = server.prompts

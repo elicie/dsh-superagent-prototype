@@ -62,10 +62,11 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-it('registers a localized main panel, sidebar entry and Plugin Manager row page, and no settings section', () => {
+it('registers a localized panel, sidebar, Grok model-settings extension and Plugin Manager row page', () => {
   const { entries, dictionaries, main, nav } = fixture([])
-  expect(entries.map(entry => entry.options.name)).toEqual(['main', 'sidebar.panellist', 'plugins.row.config'])
-  expect(entries[2]!.options).toMatchObject({ key: 'dsh-superagent#dsh-superagent', locale: 'dshSuperagent' })
+  expect(entries.map(entry => entry.options.name)).toEqual(['main', 'sidebar.panellist', 'settings.models.provider-card', 'plugins.row.config'])
+  expect(entries[2]!.options).toMatchObject({ key: 'llm-pi-ai', locale: 'dshSuperagent' })
+  expect(entries[3]!.options).toMatchObject({ key: 'dsh-superagent#dsh-superagent', locale: 'dshSuperagent' })
   expect(Object.keys(dictionaries).sort()).toEqual(['dshSuperagent', ...Object.keys(hostKorean)].sort())
   for (const [namespace, dictionary] of Object.entries(hostKorean)) expect(dictionaries[namespace]).toEqual({ ko: dictionary })
   expect(dictionaries.dshSuperagent).toEqual({ zh, en, ko })

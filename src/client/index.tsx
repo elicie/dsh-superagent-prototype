@@ -17,6 +17,8 @@ import { en, ko, zh } from './locales.ts'
 import { hostKorean } from './host-ko/index.ts'
 import KOREAN_MOBILE_STYLES from './host-ko/mobile.css?raw'
 import type { T } from './text.ts'
+import type { ModelProviderCardOwner } from './model-settings.d.ts'
+import { GrokProviderSubscription } from './grok.tsx'
 
 type ClientContext = Context & { sessions: ISessions }
 const NS = 'dshSuperagent'
@@ -68,6 +70,8 @@ export function apply(ctx: ClientContext): void {
   ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS, inject: () => ({}) },
     (props: { t: T }) => <Mounted ctx={ctx} t={props.t} />))
   ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 10, label: () => t('panel'), locale: NS }, HammerIcon))
+  ctx.slots.inject('settings.models.provider-card', () => ctx.slots.register({ name: 'settings.models.provider-card', key: 'llm-pi-ai',
+    locale: NS }, (props: ModelProviderCardOwner & { t: T }) => <GrokProviderSubscription {...props} />))
   ctx.slots.inject('plugins.row.config', () => ctx.slots.register({ name: 'plugins.row.config', key: `${ENTRY}#${ENTRY}`, locale: NS },
     (props: PluginConfigViewProps & { t: T }) => <PluginConfig t={props.t} view={props.view} form={props.form} />))
 }
