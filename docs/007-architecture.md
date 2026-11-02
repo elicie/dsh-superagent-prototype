@@ -394,7 +394,14 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/markdown.ts` | The Markdown subset of reports and questions, and the bare addresses in messages, as blocks and inline parts |
 | `src/client/text.ts` | Copy by key and the wording of domain values, reasons, senders and times |
 | `src/client/marks.ts` | The marks of the states the views classify: a Ticket's or a Thread's stage, a Source's state and a Decision's outcome, each as a dot, an icon, a tone and a label |
-| `src/client/locales.ts` | All copy in both languages, and the glossary of [001 Domain model](001-domain.md) |
+| `src/client/locales.ts` | English and Chinese copy, the Korean dictionary export, and the glossary of [001 Domain model](001-domain.md) |
+| `src/client/ko.ts` | Korean panel copy, checked against the shared translation keys |
+| `src/client/host-ko/index.ts` | Korean language-pack dictionary groups for the host UI, registered when this plugin owns Korean |
+| `src/client/host-ko/shell.ts` | Korean common, sidebar, workspace, account, model and general-settings copy |
+| `src/client/host-ko/conversation.ts` | Korean conversation, chat and question UI copy |
+| `src/client/host-ko/management.ts` | Korean plugin, automation and advanced-settings copy |
+| `src/client/host-ko/tools.ts` | Korean tool, execution, document and auxiliary UI copy |
+| `src/client/host-ko/mobile.css` | Narrow-screen host settings layout for readable Korean labels |
 | `src/client/client.css`, `css.d.ts` | The panel's stylesheet, loaded as text |
 
 `src/sources/github.ts` and `src/sources/feishu.ts` are also the entries of the two Source plugins, built by `tsdown.config.ts` and exported in `package.json` as `./github-watch` and `./feishu-watch`. The bundle's `cordis.patch.yml` inserts the three plugins, with Feishu disabled.
@@ -441,7 +448,9 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route |
 | `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, and the panel's search, glossary and route memory |
 | `tests/draft.spec.ts`, `tests/prompt-config.spec.ts`, `tests/markdown.spec.ts`, `tests/marks.spec.ts` | Draft states, merges and the save bar's line; the prompt configuration by section and the line diff; the Markdown subset and its links; the mark of every state the views classify |
-| `tests/locales.spec.ts`, `tests/styles.spec.ts` | The copy in both languages, the stylesheet |
+| `tests/panel-korean.spec.tsx` | Korean navigation, glossary, Source metadata, search, settings saves, shared pause state and error messages |
+| `tests/locales.spec.ts`, `tests/styles.spec.ts` | English, Chinese and Korean key and placeholder coverage, localized metadata and timestamps, the stylesheet |
+| `tests/host-locales.spec.ts` | Complete host Korean namespace, key and placeholder coverage against `tests/fixtures/host-locale-contract.json` for the supported DSH release |
 | `tests/class-docs.spec.ts` | Every class in `src` has a JSDoc block before it |
 | `tests/docs.spec.ts` | Numbered documents link only to earlier ones, every local link resolves, no document has merge conflict markers, and this document's tables list every module and every test |
 

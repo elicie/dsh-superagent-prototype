@@ -13,7 +13,9 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { openKnownSession, SessionNavigationError } from '../navigation.ts'
 import { App } from './app.tsx'
 import { PluginConfig, usePageForm } from './deployment.tsx'
-import { en, zh } from './locales.ts'
+import { en, ko, zh } from './locales.ts'
+import { hostKorean } from './host-ko/index.ts'
+import KOREAN_MOBILE_STYLES from './host-ko/mobile.css?raw'
 import type { T } from './text.ts'
 
 type ClientContext = Context & { sessions: ISessions }
@@ -49,6 +51,19 @@ export const inject = ['slots', 'locale', 'sessions', 'uiWorkspace']
 /** Registers the panel, sidebar icon, and Plugin Manager config view; `configForms` is optional (without it, machine settings are read-only). */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-superagent: dictionaries')
+  ctx.effect(() => ctx.locale.register(NS, 'ko', ko), 'dsh-superagent: Korean dictionary')
+  if (!ctx.locale.getLocale().locales.some(locale => locale.id === 'ko')) {
+    ctx.effect(() => {
+      const style = document.createElement('style')
+      style.dataset.dshSuperagentKorean = ''
+      style.textContent = KOREAN_MOBILE_STYLES
+      document.head.append(style)
+      return () => { style.remove() }
+    }, 'dsh-superagent: Korean mobile settings')
+    for (const [namespace, dictionary] of Object.entries(hostKorean))
+      ctx.effect(() => ctx.locale.register(namespace, 'ko', dictionary), `dsh-superagent: Korean ${namespace}`)
+    ctx.effect(() => ctx.locale.addLanguage({ id: 'ko', label: '한국어', fallback: 'en' }), 'dsh-superagent: Korean language')
+  }
   const t = ctx.locale.bind(NS)
   ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS, inject: () => ({}) },
     (props: { t: T }) => <Mounted ctx={ctx} t={props.t} />))

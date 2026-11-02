@@ -2,6 +2,10 @@
 
 Open **Superagent** in the DeepSeek Harness Web sidebar to supervise the agent. The panel prioritizes work that needs a person, then system health and history. This document builds on [000 Philosophy](000-philosophy.md) through [004 Prompts](004-prompts.md).
 
+## Language
+
+The panel supports English, Chinese and Korean. Choose **한국어** in DeepSeek Harness's **Settings → General → Language** (**설정 → 일반 → 언어**) to use Korean. When the plugin adds Korean to the shared language selector, it also registers the host UI language pack for DSH 0.2.1-rc.3, covering the sidebar, conversation, settings, plugins and tools. A separately installed Korean language pack retains ownership of host translations. Host text introduced in newer releases falls back to English. The glossary pairs Korean terms with their English equivalents. The bundle's two managed presets have Korean names and dedicated-session warnings; DSH's preset metadata accepts plain strings, so this copy stays Korean across UI languages. Other package-provided names without Korean metadata, user-written messages, saved prompt contents and agent instructions keep their original text.
+
 ## Three questions
 
 Opening the panel answers three questions, in this order:

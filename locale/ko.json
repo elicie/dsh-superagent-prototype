@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Superagent",
+    "description": "GitHub 저장소 하나를 모니터링하고, 권한이 있는 요청을 작업으로 전환하여 각각의 DSH 세션에서 실행합니다."
+  }
+}

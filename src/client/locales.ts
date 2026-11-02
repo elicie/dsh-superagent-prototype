@@ -1,5 +1,5 @@
 /**
- * Bilingual UI dictionaries (`[zh, en]`) and glossary groupings, following the domain terms in `docs/001-domain.md`.
+ * UI dictionaries and glossary groupings, following the domain terms in `docs/001-domain.md`.
  */
 import { USER_ERRORS } from '../core/errors.ts'
 import { SETUP_PROBLEMS } from '../setup.ts'
@@ -617,6 +617,7 @@ const TEXT = {
   glossaryIntro: ['界面只显示一种语言；文档、代码和工具使用英文术语。', 'The interface shows one language; documents, code and tools use the English terms.'],
   glossaryChinese: ['中文', '中文'],
   glossaryEnglish: ['English', 'English'],
+  glossaryKorean: ['한국어', '한국어'],
   glossaryMeaning: ['含义', 'Meaning'],
   'term.source': ['来源', 'Source'],
   'term.trigger': ['触发', 'Trigger'],
@@ -750,6 +751,7 @@ const TEXT = {
 export type DshSuperagentKey = keyof typeof TEXT
 const language = (index: 0 | 1) => Object.fromEntries(Object.entries(TEXT).map(([key, pair]) => [key, pair[index]])) as Record<DshSuperagentKey, string>
 export const zh = language(0), en = language(1)
+export { ko } from './ko.ts'
 
 /** Glossary terms grouped by stage flow after the acting roles; each key maps to `term.<key>` and `meaning.<key>`. */
 export const GLOSSARY = {

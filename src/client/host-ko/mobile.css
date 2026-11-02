@@ -1,0 +1,9 @@
+/* Keep the host's fixed-width settings navigation from squeezing Korean labels on narrow screens. */
+@media (max-width: 640px) {
+  html[lang='ko'] [data-shortcut-modal='settings'] { flex-direction: column; }
+  html[lang='ko'] [data-shortcut-modal='settings'] > nav { width: auto; flex: none; padding: 16px 20px 0; gap: 10px; }
+  html[lang='ko'] [data-shortcut-modal='settings'] > nav > :first-child { padding: 0; }
+  html[lang='ko'] [data-shortcut-modal='settings'] > nav > :last-child { flex-direction: row; flex-wrap: wrap; overflow: visible; }
+  html[lang='ko'] [data-shortcut-modal='settings'] > nav button { flex: none; }
+  html[lang='ko'] [data-shortcut-modal='settings'] > :last-child { min-height: 0; }
+}

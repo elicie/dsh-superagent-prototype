@@ -21,8 +21,8 @@
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: dsh-superagent-worker
-        name: dsh-superagent 执行器
-        description: dsh-superagent 的执行器 Session 专用，不供手动选择。前台命令超 5 秒转入后台，只含执行工作所需的工具。
+        name: dsh-superagent 실행기
+        description: dsh-superagent의 실행기 세션 전용입니다. 수동으로 선택하지 마세요. 실행에 필요한 도구만 포함하며, 전경 명령이 5초를 넘으면 백그라운드로 전환합니다.
         order: 90
         plugins:
           - id: persona
@@ -126,8 +126,8 @@
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: dsh-superagent-router
-        name: dsh-superagent 主 Session
-        description: dsh-superagent 的主 Session 专用，不供手动选择。前台命令和任务等待超 5 秒转入后台，只含路由所需的工具。
+        name: dsh-superagent 메인 세션
+        description: dsh-superagent의 메인 세션 전용입니다. 수동으로 선택하지 마세요. 라우팅에 필요한 도구만 포함하며, 전경 명령과 작업 대기가 5초를 넘으면 백그라운드로 전환합니다.
         order: 91
         plugins:
           - id: agent-instructions

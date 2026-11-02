@@ -30,6 +30,10 @@ Read the numbered documents in order; each builds only on the ones before it.
 - [007 Architecture](docs/007-architecture.md)
 - [008 Cookbook](docs/008-cookbook.md): adding a Source
 
+## Language
+
+한국어 화면을 사용하려면 DeepSeek Harness의 **Settings → General → Language**(**설정 → 일반 → 언어**)에서 **한국어**를 선택하세요. Superagent 패널과 함께 사이드바, 대화 화면, 전체 설정, 플러그인·도구 화면을 한국어로 표시합니다. 공통 화면 번역은 DSH 0.2.1-rc.3 기준이며, 이후 추가된 문구와 한국어 메타데이터가 없는 패키지 이름은 영어로 표시될 수 있습니다. 사용자 메시지와 에이전트 프롬프트 원문은 유지됩니다.
+
 ## Development
 
 `pnpm check` runs the typecheck, the tests and the build.

@@ -4,7 +4,8 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ApiError, caller, usePoll } from '../src/client/api.ts'
 import { apply } from '../src/client/index.tsx'
-import { zh } from '../src/client/locales.ts'
+import { en, ko, zh } from '../src/client/locales.ts'
+import { hostKorean } from '../src/client/host-ko/index.ts'
 import { SettingsSchema } from '../src/policy.ts'
 
 declare global { var IS_REACT_ACT_ENVIRONMENT: boolean }
@@ -12,13 +13,21 @@ globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
 type Entry = { options: { name: string; id?: string; key?: string; order?: number; locale?: string; label?: () => string }; component: ComponentType<Record<string, unknown>> }
 const t = ((key: keyof typeof zh) => zh[key] ?? key) as never
-function fixture(listed: string[]) {
+let effects: (() => void)[] = []
+function fixture(listed: string[], languages = ['zh', 'en']) {
   const entries: Entry[] = []
-  const dictionaries: Record<string, unknown> = {}
+  const dictionaries: Record<string, Record<string, unknown>> = {}
   const ctx = {
     slots: { inject: (_name: string, register: () => void) => register(), register: (options: Entry['options'], component: Entry['component']) => { entries.push({ options, component }); return () => {} } },
-    locale: { register: (ns: string, value: unknown) => { dictionaries[ns] = value; return () => {} }, bind: () => t },
-    effect: (effect: () => unknown) => { effect() },
+    locale: {
+      register: (ns: string, language: string | Record<string, unknown>, dictionary?: unknown) => {
+        dictionaries[ns] = { ...dictionaries[ns], ...(typeof language === 'string' ? { [language]: dictionary } : language) }
+        return () => {}
+      },
+      getLocale: () => ({ locales: languages.map(id => ({ id })) }),
+      addLanguage: vi.fn(() => () => {}), bind: () => t,
+    },
+    effect: (effect: () => unknown) => { const dispose = effect(); if (typeof dispose === 'function') effects.push(dispose as () => void) },
     sessions: { list: { getSnapshot: () => ({ phase: 'ready', byId: Object.fromEntries(listed.map(id => [id, {}])) }) }, refresh: vi.fn(async () => {}) },
     uiWorkspace: { openSession: vi.fn() },
     // Omit config form service so Deployment renders read-only.
@@ -47,16 +56,38 @@ const serve = () => vi.stubGlobal('fetch', vi.fn(async (url: string) => {
     setup: { machine: { stateDir: '/srv/state', worktreeRoot: '/srv/state/worktrees', blockedCommands: [], promptMaxChars: 100000, admissionContextMaxPages: 10, admissionContextTimeoutMs: 15000 }, problem: null, feishuProblem: null, accounts: null } })
   return Response.json({ error: 'unavailable' }, { status: 503 })
 }))
-afterEach(() => { vi.unstubAllGlobals() })
+afterEach(() => {
+  for (const dispose of effects.reverse()) dispose()
+  effects = []
+  vi.unstubAllGlobals()
+})
 
 it('registers a localized main panel, sidebar entry and Plugin Manager row page, and no settings section', () => {
   const { entries, dictionaries, main, nav } = fixture([])
   expect(entries.map(entry => entry.options.name)).toEqual(['main', 'sidebar.panellist', 'plugins.row.config'])
   expect(entries[2]!.options).toMatchObject({ key: 'dsh-superagent#dsh-superagent', locale: 'dshSuperagent' })
-  expect(Object.keys(dictionaries)).toEqual(['dshSuperagent'])
+  expect(Object.keys(dictionaries).sort()).toEqual(['dshSuperagent', ...Object.keys(hostKorean)].sort())
+  for (const [namespace, dictionary] of Object.entries(hostKorean)) expect(dictionaries[namespace]).toEqual({ ko: dictionary })
+  expect(dictionaries.dshSuperagent).toEqual({ zh, en, ko })
   expect(main.options).toMatchObject({ key: 'dsh-superagent', locale: 'dshSuperagent' })
   expect(nav.options).toMatchObject({ id: 'dsh-superagent', order: 10, locale: 'dshSuperagent' })
   expect(nav.options.label?.()).toBe('Superagent')
+})
+
+it('adds Korean to the host language selector and preserves an existing language pack', () => {
+  expect(fixture([]).ctx.locale.addLanguage).toHaveBeenCalledExactlyOnceWith({ id: 'ko', label: '한국어', fallback: 'en' })
+  const { ctx, dictionaries } = fixture([], ['zh', 'en', 'ko'])
+  expect(ctx.locale.addLanguage).not.toHaveBeenCalled()
+  expect(Object.keys(dictionaries)).toEqual(['dshSuperagent'])
+  expect(dictionaries.dshSuperagent?.ko).toEqual(ko)
+})
+
+it('scopes host mobile settings styles to the owned Korean language pack', () => {
+  fixture([], ['zh', 'en', 'ko'])
+  expect(document.querySelector('style[data-dsh-superagent-korean]')).toBeNull()
+  fixture([])
+  const style = document.querySelector('style[data-dsh-superagent-korean]')
+  expect(style).not.toBeNull()
 })
 
 it('opens a listed Session through the workspace from the main panel', async () => {

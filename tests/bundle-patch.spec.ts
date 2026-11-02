@@ -26,6 +26,22 @@ const flat = (rows: readonly Row[]): Row[] => rows.flatMap(row => [row, ...Array
 const presetOf = (rows: readonly Row[], id: string) => rows.map(row => row.config as { id?: string; order?: number; plugins: Row[] })
   .find(config => config?.id === id)!
 
+it('shows Korean names and dedicated-session warnings for both managed presets', async () => {
+  const rows = await patched()
+  for (const [id, name, role] of [
+    [WORKER_PRESET, 'dsh-superagent 실행기', '실행기'],
+    [ROUTER_PRESET, 'dsh-superagent 메인 세션', '메인'],
+  ] as const) {
+    const preset = rows.find(row => !Array.isArray(row.config) && row.config?.id === id)!.config as Record<string, unknown>
+    expect(preset.name).toBe(name)
+    expect(preset.description).toContain(`${role} 세션 전용`)
+    expect(preset.description).toContain('수동으로 선택하지 마세요.')
+    expect(preset.description).toContain('5초')
+    expect(preset.description).toContain('백그라운드로 전환합니다.')
+    expect(`${preset.name} ${preset.description}`).not.toMatch(/\p{Script=Han}/u)
+  }
+})
+
 it('defines the worker preset Executor Sessions run under, with a shell that moves long commands to the background', async () => {
   const rows = await patched()
   expect(rows.map(row => row.id)).toEqual(['dsh-superagent', 'dsh-superagent-github', 'dsh-superagent-feishu', 'dsh-superagent-worker-preset',

@@ -361,9 +361,9 @@ describe('github source', () => {
   it('describes CI as one fact: failed checks first, then unfinished ones, otherwise passed', () => {
     const counts = ciCounts({ head: 'abc', checks: [{ name: 'e2e', status: 'completed', conclusion: 'failure' }, { name: 'lint', status: 'in_progress', conclusion: null }, { name: 'docs', status: 'completed', conclusion: 'skipped' }], statuses: [{ context: 'deploy', state: 'error' }, { context: 'preview', state: 'pending' }] })
     expect(counts).toEqual({ failed: 2, running: 2 })
-    expect(ciFact(counts)).toEqual({ label: { zh: 'CI 失败', en: 'CI failed' }, value: '2', problem: true })
-    expect(ciFact({ failed: 0, running: 1 })).toEqual({ label: { zh: 'CI 进行中', en: 'CI running' }, value: '1' })
-    expect(ciFact({ failed: 0, running: 0 })).toEqual({ label: 'CI', value: { zh: '通过', en: 'passed' } })
+    expect(ciFact(counts)).toEqual({ label: { zh: 'CI 失败', en: 'CI failed', ko: 'CI 실패' }, value: '2', problem: true })
+    expect(ciFact({ failed: 0, running: 1 })).toEqual({ label: { zh: 'CI 进行中', en: 'CI running', ko: 'CI 진행 중' }, value: '1' })
+    expect(ciFact({ failed: 0, running: 0 })).toEqual({ label: 'CI', value: { zh: '通过', en: 'passed', ko: '통과' } })
   })
   it('starts a review comment\'s text with its file, line and diff lines, and keeps them and the comment it answers', () => {
     const comment: GithubComment = { id: 5, body: 'Use the theme token', user: { login: 'carol', type: 'User' }, path: 'src/render.ts', line: 43,

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { act, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { expect, it } from 'vitest'
@@ -9,19 +9,22 @@ import { Modal, SegmentedTabs } from '../src/client/controls.tsx'
 declare global { var IS_REACT_ACT_ENVIRONMENT: boolean }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
+const dir = join(process.cwd(), 'src/client')
+const clientFiles = (directory = dir): string[] => readdirSync(directory, { withFileTypes: true }).flatMap(entry =>
+  entry.isDirectory() ? clientFiles(join(directory, entry.name)) : [join(directory, entry.name)])
+
 it('imports no DSH client runtime package, only React and type declarations', () => {
-  const dir = join(process.cwd(), 'src/client')
-  for (const name of readdirSync(dir)) {
-    const source = readFileSync(join(dir, name), 'utf8')
+  for (const file of clientFiles()) {
+    const name = relative(dir, file)
+    const source = readFileSync(file, 'utf8')
     for (const match of source.matchAll(/^import (type )?[^'"]*from '(@deepseek-ai\/[^']+)'/gm)) expect({ name, from: match[2], typeOnly: !!match[1] }).toMatchObject({ typeOnly: true })
     expect(source).not.toContain('dsh-client-ui-primitives\'')
   }
 })
 
 it('imports each module of the panel only from modules that do not import it back', () => {
-  const dir = join(process.cwd(), 'src/client')
-  const graph = new Map(readdirSync(dir).filter(name => /\.tsx?$/.test(name)).map(name => [name, [...readFileSync(join(dir, name), 'utf8')
-    .matchAll(/^import [^'"]*from '\.\/([\w-]+\.tsx?)'/gm)].map(match => match[1]!)]))
+  const graph = new Map(clientFiles().filter(file => /\.tsx?$/.test(file)).map(file => [relative(dir, file), [...readFileSync(file, 'utf8')
+    .matchAll(/^import [^'"]*from '(\.[^']+\.tsx?)'/gm)].map(match => relative(dir, resolve(dirname(file), match[1]!)))]))
   const done = new Set<string>(), cycles: string[] = []
   const visit = (name: string, path: string[]): void => {
     if (path.includes(name)) { cycles.push([...path.slice(path.indexOf(name)), name].join(' → ')); return }
