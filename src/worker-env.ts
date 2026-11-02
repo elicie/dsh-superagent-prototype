@@ -8,13 +8,19 @@
  * Each instance registers here; DSH's `shellEnv` then gives a model shell `DSH_SUPERAGENT_WORKER_BIN`, the `worker-bin`
  * directory of the instance whose Session (or whose Session's subagent) runs it, and the dispatchers run that instance's
  * shims. Like the shims, this is a guardrail for the default path, not isolation: a worker can set the variable itself.
+ * The registry also knows which instances run, so this entry serves `GET /orchestrator/api/instances` for the panel's instance
+ * selector, whichever instances run, the default one included or not.
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-host-webserver'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import { chmodSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { lockSync } from 'proper-lockfile'
+import { INSTANCES_PATH, managementPrefix, type InstanceView, type InstancesView } from './instance.ts'
+import { sameOrigin } from './infra/origin.ts'
 import { WORKER_AMBIGUOUS, WORKER_BIN_VARIABLE, WORKER_UNCONFIGURED, neutralVariables, sharedWorkers, withoutDirectory, workerBin, writeDispatchers,
   writeSharedGitConfig, type SharedWorkers } from './infra/environment.ts'
 
@@ -30,6 +36,12 @@ const PARENTS = 8
 /** An instance as the registry sees it. */
 export interface WorkerMember {
   readonly stateDir: string
+  /** The instance key, empty for the default instance. */
+  readonly instance: string
+  /** The id of the instance's plugin entry, the key of its DSH configuration form. */
+  readonly entry: string
+  /** The repository (`owner/name`) the instance works on, read when instances are listed; undefined until setup names one. */
+  repository(): string | undefined
   /** True for the instance's main Session and the worker Sessions of its Tickets. */
   owns(sessionId: string): boolean
 }
@@ -128,6 +140,14 @@ export class WorkerRegistry implements Workers {
       },
     }
   }
+  /** The instances joined and not released, the default one first, then the others by key. */
+  instances(): InstanceView[] {
+    return [...this.entries].map(({ member }) => {
+      let repository: string | undefined
+      try { repository = member.repository() } catch { /* Listed without it. */ }
+      return { instance: member.instance, prefix: managementPrefix(member.instance), entry: member.entry, ...repository ? { repository } : {} }
+    }).sort((a, b) => a.instance === b.instance ? 0 : !a.instance ? -1 : !b.instance ? 1 : a.instance < b.instance ? -1 : 1)
+  }
   /** Stops taking registrations; the process environment is restored once the last instance released its own, at once if none is left. */
   stop(): Promise<void> {
     this.stopping = true
@@ -200,6 +220,16 @@ export class WorkerRegistry implements Workers {
 interface ShellEnv {
   register(contributor: { name: string; variables: Record<string, { description: string }>; resolve(execution: { agent?: Agent }): Record<string, string> }): () => void
 }
+/** What the host web server takes from a route, as `@deepseek-ai/dsh-host-webserver` declares it. */
+interface WebServer {
+  host: string
+  port: number
+  register(route: { kind: 'prefix'; path: string; handler(req: IncomingMessage, res: ServerResponse): void }): () => void
+}
+function answer(res: ServerResponse, status: number, value: unknown): void {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+  res.end(JSON.stringify(value))
+}
 interface ProfileContext { dir?: string }
 
 /**
@@ -227,5 +257,15 @@ export async function apply(ctx: Context): Promise<void> {
         return value === undefined ? {} : { [WORKER_BIN_VARIABLE]: value }
       },
     })
+  })
+  // The web server is optional; a non-loopback one is refused by the instances as well, so the route is skipped with a warning.
+  ctx.inject(['webServer'], child => {
+    const { webServer } = child as unknown as { webServer: WebServer }
+    if (webServer.host !== '127.0.0.1') { ctx.logger.warn('dsh-superagent does not list its instances on a non-loopback Web server'); return }
+    child.effect(() => webServer.register({ kind: 'prefix', path: INSTANCES_PATH, handler: (req, res) => {
+      if (!sameOrigin(req, webServer.port)) { answer(res, 403, { error: 'Same-origin management request required' }); return }
+      if (req.method !== 'GET' || new URL(req.url ?? '/', 'http://localhost').pathname !== INSTANCES_PATH) { answer(res, 404, { error: 'Unknown operation' }); return }
+      answer(res, 200, { instances: registry.instances() } satisfies InstancesView)
+    } }), 'dsh-superagent: instance list route')
   })
 }

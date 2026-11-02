@@ -2,8 +2,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { expect, vi } from 'vitest'
-import { App } from '../../src/client/app.tsx'
-import { usePageForm } from '../../src/client/deployment.tsx'
+import { DEFAULT_ENTRY, InstancePanel } from '../../src/client/app.tsx'
 import { zh } from '../../src/client/locales.ts'
 import type { T } from '../../src/client/text.ts'
 import { server, usePanelServer } from './panel-server.ts'
@@ -16,7 +15,8 @@ export const translator = (dictionary: Record<string, string>): T => ((key: stri
   return params ? template.replace(/\{(\w+)\}/g, (match, name: string) => name in params ? String(params[name]) : match) : template
 }) as T
 function Panel({ t }: { t: T }) {
-  return <App t={t} openSession={async id => { server.opened.push(id) }} deploymentForm={usePageForm(server.form)} />
+  return <InstancePanel t={t} openSession={async id => { server.opened.push(id) }}
+    formOf={entry => entry === DEFAULT_ENTRY ? server.form : server.forms[entry]} />
 }
 let root: Root | undefined
 let container: HTMLElement | undefined
@@ -76,4 +76,6 @@ export function field<E extends HTMLElement>(label: string): E {
   if (!match) throw new Error(`No field ${label}`)
   return match as unknown as E
 }
-export const at = (route: object) => sessionStorage.setItem('dsh-superagent/route', JSON.stringify({ route, stack: [] }))
+/** Store the route the panel of `instance` (the default one when empty) opens at. */
+export const at = (route: object, instance = '') => sessionStorage.setItem(instance ? `dsh-superagent/route/${instance}`
+  : 'dsh-superagent/route', JSON.stringify({ route, stack: [] }))

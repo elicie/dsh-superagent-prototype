@@ -1,16 +1,18 @@
-/** Root panel shell: header with global search and glossary, top-level navigation tabs, and active route view. */
+/** Root panel shell: instance selection, header with global search and glossary, top-level navigation tabs, and active route view. */
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import type { SearchView } from './api.ts'
+import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
+import { managementPrefix, type InstanceView } from '../instance.ts'
+import { useInstances, type SearchView } from './api.ts'
 import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
-import type { DeploymentForm } from './deployment.tsx'
+import { usePageForm, type DeploymentForm } from './deployment.tsx'
 import { EvalStatus } from './eval.tsx'
 import { ExecutionStatus } from './execution.tsx'
 import { ticketMark } from './marks.ts'
 import { GLOSSARY, GLOSSARY_VALUES, en, ko, zh, type DshSuperagentKey } from './locales.ts'
 import { OverviewPage } from './overview.tsx'
 import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
-import { HOME, TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, type Location, type Route,
-  type Tab } from './route.ts'
+import { HOME, TABS, initialLocation, lastSettingsGroup, remember, routeLabel, settingsRoute, storeInstance, storedInstance,
+  type Location, type Route, type Tab } from './route.ts'
 import { SettingsPage } from './settings.tsx'
 import { SourceStatus } from './source.tsx'
 import { actorName, errorText, reasonLabel, valueLabel, type T, readableMarkers } from './text.ts'
@@ -22,6 +24,12 @@ import { When } from './widgets.tsx'
 export interface AppProps {
   t: T; openSession: (sessionId: string) => Promise<void>
   deploymentForm: DeploymentForm
+  /** Key of the instance shown, whose route memory the panel uses; empty for the default instance. */
+  instance?: string
+  /** Management URL prefix of that instance; `/orchestrator` by default. */
+  prefix?: string
+  /** The instance selector for the header, when there is an instance to choose. */
+  switcher?: ReactNode
 }
 
 function Glossary({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -99,7 +107,7 @@ function SearchResults({ result, query, onClose }: { result: SearchView; query: 
   </div>
 }
 
-function Header({ masterId }: { masterId: string | undefined }) {
+function Header({ masterId, switcher }: { masterId: string | undefined; switcher: ReactNode }) {
   const { t, call, openSession, notify } = usePanel()
   const [glossary, setGlossary] = useState(false)
   const [query, setQuery] = useState('')
@@ -123,7 +131,7 @@ function Header({ masterId }: { masterId: string | undefined }) {
       failure => { if (request === latest.current) notify(errorText(failure)) })
   }
   return <header className="dt-head">
-    <div className="dt-head-title"><h1 className="dt-title">{t('title')}</h1></div>
+    <div className="dt-head-title"><h1 className="dt-title">{t('title')}</h1>{switcher}</div>
     <div className="dt-toolbar">
       <form ref={search} className="dt-search" role="search" onSubmit={submit} onKeyDown={event => { if (event.key === 'Escape') show() }}>
         <Input type="search" icon={<Icon name="search" />} value={query} placeholder={t('searchPlaceholder')} aria-label={t('searchLabel')}
@@ -139,7 +147,8 @@ function Header({ masterId }: { masterId: string | undefined }) {
   </header>
 }
 
-function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab: Tab) => void; deploymentForm: DeploymentForm }) {
+function Pages({ route, openTab, deploymentForm, switcher }: { route: Route; openTab: (tab: Tab) => void; deploymentForm: DeploymentForm
+  switcher: ReactNode }) {
   const { t } = usePanel()
   const { state, error, reload } = usePanelData()
   // Keep the active tab scrolled into view on narrow screens when routes change via links.
@@ -161,7 +170,7 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
   })()
   return <div className="dt-page">
     <div className="dt-column">
-      <Header masterId={state?.masterId} />
+      <Header masterId={state?.masterId} switcher={switcher} />
       {error && state && <p className="dt-error" role="status">{error.message}</p>}
       <SegmentedTabs className="dt-tabs" label={t('pagesLabel')} value={route.page} onChange={openTab}
         items={TABS.map(value => ({ value, label: t(`tab.${value}`), id: `dt-tab-${value}`, panelId: 'dt-page' }))} />
@@ -171,9 +180,9 @@ function Pages({ route, openTab, deploymentForm }: { route: Route; openTab: (tab
 }
 
 /** Root panel component managing route history and shared panel state. */
-export function App({ t, openSession, deploymentForm }: AppProps) {
-  const [location, setLocation] = useState(initialLocation)
-  useEffect(() => { remember(location) }, [location])
+export function App({ t, openSession, deploymentForm, instance = '', prefix, switcher }: AppProps) {
+  const [location, setLocation] = useState(() => initialLocation(instance))
+  useEffect(() => { remember(location, instance) }, [location, instance])
   // Preserve the last opened settings group across navigation so the Settings tab reopens at it.
   const move = useCallback((next: (current: Location) => Pick<Location, 'route' | 'stack'>) =>
     setLocation(current => ({ ...next(current), group: lastSettingsGroup(current) })), [])
@@ -183,7 +192,51 @@ export function App({ t, openSession, deploymentForm }: AppProps) {
   const back = useCallback(() => move(current => ({ route: current.stack.at(-1) ?? HOME, stack: current.stack.slice(0, -1) })), [move])
   const openTab = useCallback((tab: Tab) => move(current => ({ stack: [], route: tab === 'settings'
     ? settingsRoute(lastSettingsGroup(current)) : { page: tab, id: undefined } })), [move])
-  return <PanelProvider t={t} openSession={openSession} navigate={navigate} back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}>
-    <Pages route={location.route} openTab={openTab} deploymentForm={deploymentForm} />
+  return <PanelProvider t={t} openSession={openSession} navigate={navigate} back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}
+    prefix={prefix}>
+    <Pages route={location.route} openTab={openTab} deploymentForm={deploymentForm} switcher={switcher} />
   </PanelProvider>
+}
+
+/** Plugin entry id of the default instance, the key of its DSH configuration form. */
+export const DEFAULT_ENTRY = 'dsh-superagent'
+/** An instance as far as the panel knows it; `entry` is unknown for an instance never listed. */
+type Known = Omit<InstanceView, 'entry'> & { entry: string | undefined }
+const instanceName = (t: T, { instance, repository }: Known) =>
+  repository ? instance ? `${repository} · ${instance}` : repository : instance || t('instanceDefault')
+
+/** Header selector over the listed instances; a selected instance missing from the list, as while it restarts, stays and is marked. */
+function InstanceSelect({ t, instances, selected, select }: { t: T; instances: InstanceView[]; selected: Known
+  select: (instance: string) => void }) {
+  const listed = instances.some(view => view.instance === selected.instance)
+  const options: Known[] = listed ? instances : [...instances, selected].sort((a, b) => a.instance < b.instance ? -1 : 1)
+  const label = (view: Known) => listed || view.instance !== selected.instance ? instanceName(t, view)
+    : t('instanceUnavailable', { name: instanceName(t, view) })
+  return <select className="dt-select dt-instance-select" aria-label={t('instanceLabel')} title={label(selected)} value={selected.instance}
+    onChange={event => select(event.target.value)}>
+    {options.map(view => <option key={view.instance} value={view.instance}>{label(view)}</option>)}
+  </select>
+}
+
+/**
+ * The panel of the instance this browser selected (docs/005-panel.md). Without an instance list, as on a host that does not serve
+ * one, it is the default instance's panel without a selector. Switching instances remounts the panel at the instance's own route.
+ */
+export function InstancePanel({ t, openSession, formOf }: Pick<AppProps, 't' | 'openSession'> & {
+  /** The DSH configuration form of a plugin entry, `configForms.get(entry)`. */
+  formOf: (entry: string) => ConfigForm<Record<string, unknown>> | undefined
+}) {
+  const { instances, failed } = useInstances()
+  const [stored, setStored] = useState(storedInstance)
+  // The last listed view of each instance, so one absent from the list while it restarts keeps its name and its form.
+  const seen = useRef(new Map<string, InstanceView>())
+  for (const view of instances ?? []) seen.current.set(view.instance, view)
+  const instance = failed ? '' : stored
+  const selected: Known = instances?.find(view => view.instance === instance) ?? seen.current.get(instance)
+    ?? { instance, prefix: managementPrefix(instance), entry: instance ? undefined : DEFAULT_ENTRY }
+  const deploymentForm = usePageForm(selected.entry === undefined ? undefined : formOf(selected.entry))
+  const select = useCallback((next: string) => { storeInstance(next); setStored(next) }, [])
+  const choose = instances && (instances.length > 1 || !instances.some(view => view.instance === instance))
+  return <App key={instance} t={t} openSession={openSession} deploymentForm={deploymentForm} instance={instance} prefix={selected.prefix}
+    switcher={choose ? <InstanceSelect t={t} instances={instances} selected={selected} select={select} /> : undefined} />
 }

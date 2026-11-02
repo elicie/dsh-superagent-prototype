@@ -18,6 +18,12 @@ Signing in leaves the model-provider configuration unchanged. After sign-in, sel
 
 These operations use the same loopback/same-origin management boundary as the Superagent panel. When a deployment exposes that panel through a tokenless proxy, anyone with management access can manage this login too. Protect the deployment's network access before storing a personal subscription credential. The feature does not import Grok CLI credentials, start Grok CLI processes, or require ACP.
 
+## Instances
+
+When one DeepSeek Harness process runs several Superagent instances (006 Deployment, "Several instances in one profile"), a selector beside the panel title chooses the instance the whole panel manages. Each option shows the instance's repository (`owner/name`) and, for an instance other than the default one, its key; an instance without a repository shows its key, or **Default instance**. The panel reads the running instances every 15 seconds. With a single default instance, or on a host that does not list instances, the selector is hidden and the panel manages the default instance.
+
+The browser remembers the selected instance, and each instance remembers its own last page. Switching instances reloads the panel at that page. An instance that is restarting, as after saving settings, briefly leaves the list: the panel stays on it and marks it **unavailable** until it answers again. The Deployment settings edit the selected instance's own plugin entry. The Grok subscription card in the host's model settings belongs to the whole process, not to an instance.
+
 ## Three questions
 
 Opening the panel answers three questions, in this order:

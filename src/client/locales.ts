@@ -151,6 +151,9 @@ const TEXT = {
   // Header, search, and tabs
   panel: ['Superagent', 'Superagent'],
   openMaster: ['打开主 Session', 'Open main Session'],
+  instanceLabel: ['Superagent 实例', 'Superagent instance'],
+  instanceDefault: ['默认实例', 'Default instance'],
+  instanceUnavailable: ['{name}（不可用）', '{name} (unavailable)'],
   pagesLabel: ['dsh-superagent 页面', 'dsh-superagent pages'],
   searchPlaceholder: ['搜索工单、线程、触发或链接', 'Search Tickets, Threads, Triggers or links'],
   searchLabel: ['搜索', 'Search'],

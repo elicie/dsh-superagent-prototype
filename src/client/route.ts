@@ -1,5 +1,6 @@
-/** Typed panel routes, route parser, and sessionStorage location history. */
+/** Typed panel routes, route parser, and sessionStorage location history per instance, and the selected instance in localStorage. */
 import { THREAD_FILTERS, TICKET_FILTERS, type ThreadFilter, type TicketFilter } from '../app/api.ts'
+import { INSTANCE_PATTERN } from '../instance.ts'
 import type { SetupPlace } from '../setup.ts'
 import { DECISION_FILTERS, type DecisionFilter } from './api.ts'
 import type { T } from './text.ts'
@@ -47,12 +48,14 @@ export function parseRoute(value: unknown): Route | undefined {
 }
 
 const ROUTE_KEY = 'dsh-superagent/route'
+/** Each instance remembers its own route; the default instance keeps the original key so routes stored before instances still load. */
+const routeKey = (instance: string) => instance ? `${ROUTE_KEY}/${instance}` : ROUTE_KEY
 export interface Location { route: Route; stack: Route[]; group?: SettingsGroup | undefined }
 export const lastSettingsGroup = ({ route, group }: Location): SettingsGroup => route.page === 'settings' ? route.query.group
   : group ?? 'source'
-export function initialLocation(): Location {
+export function initialLocation(instance = ''): Location {
   try {
-    const stored = JSON.parse(sessionStorage.getItem(ROUTE_KEY) ?? 'null') as { route?: unknown; stack?: unknown; group?: unknown } | null
+    const stored = JSON.parse(sessionStorage.getItem(routeKey(instance)) ?? 'null') as { route?: unknown; stack?: unknown; group?: unknown } | null
     const route = parseRoute(stored?.route)
     const stack = Array.isArray(stored?.stack) ? stored.stack as unknown[] : []
     if (route) return { route, stack: stack.flatMap(item => parseRoute(item) ?? []), group: pick(SETTINGS_GROUPS, stored?.group) }
@@ -62,6 +65,20 @@ export function initialLocation(): Location {
   }
   return { route: HOME, stack: [] }
 }
-export function remember(location: Location): void {
-  try { sessionStorage.setItem(ROUTE_KEY, JSON.stringify(location)) } catch (failure) { void failure /* Route memory is a convenience. */ }
+export function remember(location: Location, instance = ''): void {
+  try { sessionStorage.setItem(routeKey(instance), JSON.stringify(location)) } catch (failure) { void failure /* Route memory is a convenience. */ }
+}
+
+const INSTANCE_KEY = 'dsh-superagent/instance'
+/** The instance this browser last selected, `''` (the default instance) when none or when storage fails. */
+export function storedInstance(): string {
+  try {
+    const value = localStorage.getItem(INSTANCE_KEY) ?? ''
+    return INSTANCE_PATTERN.test(value) ? value : ''
+  } catch (failure) { void failure /* Instance memory is a convenience. */ }
+  return ''
+}
+export function storeInstance(instance: string): void {
+  try { if (instance) localStorage.setItem(INSTANCE_KEY, instance); else localStorage.removeItem(INSTANCE_KEY) }
+  catch (failure) { void failure /* Instance memory is a convenience. */ }
 }

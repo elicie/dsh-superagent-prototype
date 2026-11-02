@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { workerBin } from '../src/infra/environment.ts'
+import { INSTANCES_PATH } from '../src/instance.ts'
 import { SHARED_DIRECTORY, WorkerRegistry, apply, type WorkerMember } from '../src/worker-env.ts'
 
 let dir: string
@@ -26,8 +27,8 @@ async function started(env: Record<string, string | undefined> = { ...ORIGINAL }
   return { registry, env, writes }
 }
 /** An instance with state directory `<dir>/<name>` that owns `orchestrator-<name>` and the workers of `tickets`. */
-const member = (name: string, tickets: string[] = []): WorkerMember => ({
-  stateDir: join(dir, name), owns: id => id === `orchestrator-${name}` || tickets.some(ticket => id === `worker-${ticket}`),
+const member = (name: string, tickets: string[] = [], extra: Partial<WorkerMember> = {}): WorkerMember => ({
+  stateDir: join(dir, name), instance: name, entry: `entry-${name}`, repository: () => undefined, ...extra, owns: id => id === `orchestrator-${name}` || tickets.some(ticket => id === `worker-${ticket}`),
 })
 /** Fake agents by Session id, each with its parent Session. */
 function agents(parents: Record<string, string | undefined>) {
@@ -61,7 +62,7 @@ describe('owner of a shell call', () => {
     const { registry } = await started()
     const a = registry.join(member('a', ['t1']))
     const b = registry.join(member('b', ['t1']))
-    const c = registry.join({ stateDir: join(dir, 'c'), owns: id => { if (id === 'broken') throw new Error('closed'); return false } })
+    const c = registry.join({ stateDir: join(dir, 'c'), instance: 'c', entry: 'c', repository: () => undefined, owns: id => { if (id === 'broken') throw new Error('closed'); return false } })
     const { of, get } = agents({ 'orchestrator-a': undefined, 'worker-t1': undefined, broken: undefined })
     expect(registry.resolve(of('orchestrator-a'), get)).toBe('unconfigured')
     await a.configure([])
@@ -214,7 +215,7 @@ describe('plugin entry', () => {
         logger: { info: vi.fn(), warn: vi.fn() },
         effect: (effect: () => unknown) => { effects.push(effect) },
         provide: (name: string, value: unknown) => { provided.set(name, value) },
-        inject: (names: string[], callback: (child: unknown) => void) => { expect(names).toEqual(['shellEnv']); callback(child) },
+        inject: (names: string[], callback: (child: unknown) => void) => { if (names[0] === 'shellEnv') callback(child) },
       }
       await apply(ctx as never)
       const registry = provided.get('superagentWorkers') as WorkerRegistry
@@ -233,5 +234,98 @@ describe('plugin entry', () => {
       for (const effect of effects) await (effect() as () => Promise<void>)()
       expect({ ...process.env }).toEqual(before)
     } finally { for (const name of Object.keys(process.env)) if (!(name in before)) delete process.env[name]; Object.assign(process.env, before) }
+  })
+})
+
+describe('instance list', () => {
+  it('lists the joined instances, the default first and the others by key, until they release', async () => {
+    const { registry } = await started()
+    expect(registry.instances()).toEqual([])
+    const z = registry.join(member('z', [], { repository: () => 'me/z' }))
+    const def = registry.join(member('x', [], { instance: '', entry: 'dsh-superagent', repository: () => 'me/default' }))
+    const a = registry.join(member('a'))
+    expect(registry.instances()).toEqual([
+      { instance: '', prefix: '/orchestrator', entry: 'dsh-superagent', repository: 'me/default' },
+      { instance: 'a', prefix: '/orchestrator-a', entry: 'entry-a' },
+      { instance: 'z', prefix: '/orchestrator-z', entry: 'entry-z', repository: 'me/z' },
+    ])
+    await def.release()
+    expect(registry.instances().map(view => view.instance)).toEqual(['a', 'z'])
+    await a.release(); await z.release()
+    expect(registry.instances()).toEqual([])
+  })
+  it('lists an instance without a repository when it has none yet or cannot say', async () => {
+    const { registry } = await started()
+    const empty = registry.join(member('a', [], { repository: () => '' }))
+    const broken = registry.join(member('b', [], { repository: () => { throw new Error('closed') } }))
+    expect(registry.instances()).toEqual([
+      { instance: 'a', prefix: '/orchestrator-a', entry: 'entry-a' },
+      { instance: 'b', prefix: '/orchestrator-b', entry: 'entry-b' },
+    ])
+    await empty.release(); await broken.release()
+  })
+})
+
+describe('instance list route', () => {
+  type Handler = (req: unknown, res: unknown) => void
+  /** Runs the plugin entry against a fake web server of `host`; returns the registered routes and a caller. */
+  async function route(host: string | undefined) {
+    const profile = join(dir, 'profile')
+    const routes: { kind: string; path: string; handler: Handler }[] = []
+    const warn = vi.fn(), effects: (() => unknown)[] = [], provided = new Map<string, unknown>()
+    const webServer = host === undefined ? undefined : { host, port: 3082, register: vi.fn((entry: typeof routes[number]) => { routes.push(entry); return () => {} }) }
+    const ctx = {
+      get: (name: string) => name === 'profileContext' ? { dir: profile } : undefined,
+      logger: { info: vi.fn(), warn },
+      effect: (effect: () => unknown) => { effects.push(effect) },
+      provide: (name: string, value: unknown) => { provided.set(name, value) },
+      inject: (names: string[], callback: (child: unknown) => void) => {
+        if (names[0] === 'webServer') { if (webServer) callback({ webServer, effect: (effect: () => unknown) => { effect() } }) }
+      },
+    }
+    const before = { ...process.env }
+    await apply(ctx as never)
+    const registry = provided.get('superagentWorkers') as WorkerRegistry
+    registries.push(registry)
+    const call = (method: string, url: string, headers: Record<string, string> = { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' }) => {
+      let status = 0, text = '', head: Record<string, string> = {}
+      routes[0]!.handler({ method, url, headers }, { writeHead: (code: number, h: Record<string, string>) => { status = code; head = h }, end: (data: string) => { text = data } })
+      return { status, head, body: JSON.parse(text) as unknown }
+    }
+    const restore = async () => {
+      for (const effect of effects) await (effect() as () => Promise<void>)()
+      for (const name of Object.keys(process.env)) if (!(name in before)) delete process.env[name]
+      Object.assign(process.env, before)
+    }
+    return { registry, routes, call, warn, restore, webServer }
+  }
+  it('answers the list to a same-origin GET of exactly its path and refuses anything else', async () => {
+    const { registry, routes, call, restore } = await route('127.0.0.1')
+    try {
+      expect(routes).toHaveLength(1)
+      expect(routes[0]).toMatchObject({ kind: 'prefix', path: INSTANCES_PATH })
+      const a = registry.join(member('a', [], { repository: () => 'me/a' }))
+      const ok = call('GET', INSTANCES_PATH)
+      expect(ok.status).toBe(200)
+      expect(ok.head).toMatchObject({ 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+      expect(ok.body).toEqual({ instances: [{ instance: 'a', prefix: '/orchestrator-a', entry: 'entry-a', repository: 'me/a' }] })
+      expect(call('GET', `${INSTANCES_PATH}?x=1`).status).toBe(200)
+      expect(call('GET', INSTANCES_PATH, { host: '127.0.0.1:3082' }).status).toBe(403)
+      expect(call('GET', INSTANCES_PATH, { host: 'evil.test', 'x-orchestrator-request': '1' }).status).toBe(403)
+      expect(call('GET', INSTANCES_PATH, { host: '127.0.0.1:3082', 'x-orchestrator-request': '1', origin: 'http://evil.test' }).status).toBe(403)
+      expect(call('GET', `${INSTANCES_PATH}/more`).status).toBe(404)
+      expect(call('POST', INSTANCES_PATH).status).toBe(404)
+      await a.release()
+    } finally { await restore() }
+  })
+  it('skips the route with a warning on a non-loopback web server and works without one', async () => {
+    const open = await route('0.0.0.0')
+    try {
+      expect(open.routes).toEqual([])
+      expect(open.webServer!.register).not.toHaveBeenCalled()
+      expect(open.warn).toHaveBeenCalledTimes(1)
+    } finally { await open.restore() }
+    const none = await route(undefined)
+    try { expect(none.registry.instances()).toEqual([]) } finally { await none.restore() }
   })
 })

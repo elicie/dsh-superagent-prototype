@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, vi } from 'vitest'
 import { z } from 'zod'
 import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { Api, ApiResponse, RouteParams } from '../../src/app/api.ts'
+import { DEFAULT_PREFIX, INSTANCES_PATH, type InstancesView } from '../../src/instance.ts'
 import { SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInPart, builtInParts, composePrompt, composeSkill, defaultPrompts,
   environmentSection, policySection, promptParts } from '../../src/app/prompts.ts'
 import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, SourceStatusRow, SourceView, StateView, ThreadPageView,
@@ -93,7 +94,15 @@ export interface PanelServer {
   threads: ThreadRow[]
   threadPages: (key: string, query: { before?: string; around?: string }) => ThreadPageView | undefined
   person: TicketRow[]; search: Pick<ApiResponse<'GET search'>, 'items' | 'threads'>; history: HistoryView
-  requests: { path: string; method: string; body?: unknown }[]
+  /** Management requests; `prefix` is set only for an instance other than the default one. */
+  requests: { path: string; method: string; body?: unknown; prefix?: string }[]
+  /**
+   * Answer of `INSTANCES_PATH`; without one it answers 404, as a host without the route does. Every instance shares this fake's data;
+   * the prefix of an instance not listed answers an empty 404, as while that instance restarts. The default prefix always answers.
+   */
+  instances?: InstancesView
+  /** Requests to `INSTANCES_PATH`. */
+  listings: number
   /** Requests with undeclared query params or invalid body presence; asserted empty after each test. */
   misuse: string[]
   queued: Set<string>
@@ -104,7 +113,10 @@ export interface PanelServer {
   down: boolean
   /** Count of responses not yet consumed by the client. */
   pending: number
+  /** The default instance's configuration form (entry `dsh-superagent`). */
   form?: ConfigForm<Record<string, unknown>> | undefined
+  /** Configuration forms of other entries, by entry id. */
+  forms: Record<string, ConfigForm<Record<string, unknown>>>
   opened: string[]
   dropped: DroppedReply[]
   failing: Extract<Problem, { kind: 'outgoing' }>['outgoing'][]
@@ -247,7 +259,8 @@ function initial(): PanelServer {
     en: 'Feishu message' } }
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
-    health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [],
+    health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [], listings: 0,
+    forms: {},
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
         name: 'Widgets Bot' } } },
@@ -437,15 +450,22 @@ class Reply extends Response {
 
 export function usePanelServer(cleanup: () => void) {
   beforeEach(() => {
-    sessionStorage.clear()
+    sessionStorage.clear(); localStorage.clear()
     server = initial()
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit): Promise<Response> => {
       if (server.down) return new Response(null, { status: 404 })
       const address = new URL(url, 'http://127.0.0.1:3082')
-      const path = address.pathname.replace('/orchestrator/api/', '')
+      if (new Headers(init?.headers).get('x-orchestrator-request') !== '1') server.misuse.push(`${address.pathname} without its header`)
+      if (address.pathname === INSTANCES_PATH) {
+        server.listings++
+        return server.instances ? new Reply(server.instances, 200) : new Reply({ error: 'Unknown operation' }, 404)
+      }
+      const [, prefix = '', path = ''] = /^(\/[^/]+)\/api\/(.*)$/.exec(address.pathname) ?? []
+      if (prefix !== DEFAULT_PREFIX && !server.instances?.instances.some(view => view.prefix === prefix)) return new Response(null, { status: 404 })
       const method = init?.method ?? 'GET'
       const body: unknown = init?.body ? JSON.parse(String(init.body)) : undefined
-      server.requests.push({ path: decodeURIComponent(`${path}${address.search}`), method, ...body === undefined ? {} : { body } })
+      server.requests.push({ path: decodeURIComponent(`${path}${address.search}`), method, ...body === undefined ? {} : { body },
+        ...prefix === DEFAULT_PREFIX ? {} : { prefix } })
       const route = match(method, path.split('/'))
       if (!route) return new Reply({ error: 'Unknown operation' }, 404)
       const answer = await run(route.key, route.params, address.searchParams, body)

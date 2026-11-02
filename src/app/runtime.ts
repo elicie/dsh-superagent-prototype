@@ -102,7 +102,9 @@ export class Runtime extends Service implements SourceHost {
       const report = (error: unknown) => { ctx.logger.warn('dsh-superagent: %s', String(error)) }
       const store = opened = this.store = new Store(join(machine.stateDir, 'orchestrator.sqlite'), report)
       // Shells of this instance's Sessions reach its shims once setup marks it configured; until then they fail.
-      joined = this.workers = workers.join({ stateDir: machine.stateDir, owns: sessionId => this.owns(sessionId) })
+      joined = this.workers = workers.join({ stateDir: machine.stateDir, owns: sessionId => this.owns(sessionId), instance: machine.instance ?? '',
+        entry: (ctx.fiber as unknown as { entry?: { options?: { id?: string } } }).entry?.options?.id || 'dsh-superagent',
+        repository: () => setup.configured() ? setup.deployment.repository || undefined : undefined })
       const setup = this.setup = new Setup({ context: ctx, machine, lifetime: this.lifetime, workers: joined, restart })
       const deployed = () => setup.configured()
         ? environmentOf({ deployment: setup.deployment, sources: this.sources, settings: store.settings() }) : undefined

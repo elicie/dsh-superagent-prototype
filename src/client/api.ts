@@ -5,7 +5,7 @@ import { SUBSCRIPTION_ERRORS, type SubscriptionError } from '../app/subscription
 import { USER_ERRORS, type UserErrorCode } from '../core/errors.ts'
 import type { TicketStage } from '../core/stage.ts'
 import type { SetupProblem } from '../setup.ts'
-import { DEFAULT_PREFIX } from '../instance.ts'
+import { DEFAULT_PREFIX, INSTANCES_PATH, type InstanceView, type InstancesView } from '../instance.ts'
 
 /** Host rejection identified by a structured user error code and interpolation values. */
 export interface UserFailure { code: UserErrorCode; values: Record<string, string> }
@@ -102,6 +102,24 @@ export function usePoll<T>(load: () => Promise<T>, deps: readonly unknown[], int
   }, [...deps, intervalMs])
   const reload = useCallback(() => refresh.current(), [])
   return { data: state.data, error: state.error, reload }
+}
+
+/** Read the host's list of running instances; any failure, such as the 404 of a host without the route, rejects. */
+async function listInstances(): Promise<InstanceView[]> {
+  const response = await fetch(INSTANCES_PATH, { headers: { 'x-orchestrator-request': '1' } })
+  const text = await response.text()
+  if (!response.ok) throw new Error(`${INSTANCES_PATH} answered ${response.status}`)
+  const { instances } = JSON.parse(text) as Partial<InstancesView>
+  if (!Array.isArray(instances)) throw new Error(`${INSTANCES_PATH} answered without instances`)
+  return instances.filter(item => typeof item?.instance === 'string' && typeof item.prefix === 'string' && typeof item.entry === 'string')
+}
+/**
+ * Poll the instances running in this process. `undefined` until the list first arrives, and for good when the host never serves it
+ * (`failed`); a later failed poll keeps the last list.
+ */
+export function useInstances(intervalMs = 15_000): { instances: InstanceView[] | undefined; failed: boolean } {
+  const { data, error } = usePoll(listInstances, [], intervalMs)
+  return { instances: data, failed: !data && !!error }
 }
 
 export const DECISION_FILTERS = ['work', 'stop', 'ignore', 'unavailable', 'all'] as const

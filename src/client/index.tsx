@@ -11,8 +11,8 @@ import type { PluginConfigViewProps } from '@deepseek-ai/dsh-client-ui-plugin-ma
 import type { ISessions } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { openKnownSession, SessionNavigationError } from '../navigation.ts'
-import { App } from './app.tsx'
-import { PluginConfig, usePageForm } from './deployment.tsx'
+import { DEFAULT_ENTRY, InstancePanel } from './app.tsx'
+import { PluginConfig } from './deployment.tsx'
 import { en, ko, zh } from './locales.ts'
 import { hostKorean } from './host-ko/index.ts'
 import KOREAN_MOBILE_STYLES from './host-ko/mobile.css?raw'
@@ -23,7 +23,7 @@ import { GrokProviderSubscription } from './grok.tsx'
 type ClientContext = Context & { sessions: ISessions }
 const NS = 'dshSuperagent'
 const PANEL_ID = 'dsh-superagent' as MainPanelId
-const ENTRY = 'dsh-superagent'
+const ENTRY = DEFAULT_ENTRY
 
 function HammerIcon({ size }: SidebarPanelIconOwnerProps) {
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -45,8 +45,9 @@ function Mounted({ ctx, t }: { ctx: ClientContext; t: T }) {
       throw error
     }
   }, [ctx, t])
-  const form = usePageForm(ctx.get('configForms')?.get<Record<string, unknown>>(ENTRY))
-  return <App t={t} openSession={openSession} deploymentForm={form} />
+  // Each instance's Deployment settings use its own entry's configuration form.
+  const formOf = useCallback((entry: string) => ctx.get('configForms')?.get<Record<string, unknown>>(entry), [ctx])
+  return <InstancePanel t={t} openSession={openSession} formOf={formOf} />
 }
 
 export const inject = ['slots', 'locale', 'sessions', 'uiWorkspace']

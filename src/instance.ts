@@ -17,3 +17,23 @@ export function managementPrefix(instance = ''): string {
   if (!INSTANCE_PATTERN.test(instance)) throw new Error(`dsh-superagent instance must be a lowercase slug of at most 32 characters, not ${JSON.stringify(instance)}`)
   return `${DEFAULT_PREFIX}-${instance}`
 }
+
+/**
+ * Host-level route listing the instances running in this process, served by the root `dsh-superagent/worker-env` entry so it
+ * answers whichever instances run, the default one included or not. It sits under `/orchestrator/api/` like the host-level Grok
+ * routes: the longer prefix wins over the default instance's `/orchestrator`.
+ */
+export const INSTANCES_PATH = `${DEFAULT_PREFIX}/api/instances`
+/** One instance as the panel's instance selector shows it. */
+export interface InstanceView {
+  /** Instance key; empty for the default instance. */
+  instance: string
+  /** Management URL prefix, `managementPrefix(instance)`. */
+  prefix: string
+  /** Plugin entry id of the instance's `dsh-superagent` entry, the key of its DSH configuration form (`configForms.get`). */
+  entry: string
+  /** The GitHub repository the instance works on (`owner/name`), once its setup names one. */
+  repository?: string
+}
+/** Answer of `GET INSTANCES_PATH`: the default instance first, then the others by key. */
+export interface InstancesView { instances: InstanceView[] }

@@ -123,7 +123,7 @@ One DeepSeek Harness process can run several instances, for example one per repo
 - Entry ids must be unique in the whole profile. Prefix them with the instance key; do not reuse the bundle's ids.
 - Each instance needs its own `stateDir` and its own `instance` key. DSH refuses the routes of a second instance with the same key: `webserver: duplicate prefix route "/orchestrator-<instance>"`.
 - The management API of instance `widgets` is at `/orchestrator-widgets/api/`; the default instance keeps `/orchestrator/api/`. Grok subscriptions stay at `/orchestrator/api/subscriptions/grok`, shared by the whole process.
-- The **Superagent** panel shows the default instance. Read another instance through its API, or `scripts/dsh-superagent status --instance widgets`.
+- The root `dsh-superagent/worker-env` entry lists the running instances at `GET /orchestrator/api/instances` (same-origin, loopback web server only), whichever of them run, the default one included or not. The **Superagent** panel reads that list and offers an instance selector. Edit an instance's limits in its panel's **Settings → Deployment**; DeepSeek Harness's Plugin Manager shows the configuration page of the default instance only. `scripts/dsh-superagent status --instance widgets` reads one instance from the shell.
 - Each instance's workers use its own accounts. The shared worker environment, below, picks the instance for each command from the Session that runs it.
 
 #### Shared worker environment

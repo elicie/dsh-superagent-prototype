@@ -34,7 +34,7 @@ Startup registers management routes and runs Setup, which marks the instance con
 
 Shutdown cancels turns, waits for passes, effects and agents, releases the instance's registration with the shared worker environment, closes the Store and releases the lock. Source plugins inject Runtime as the `orchestrator` service through the narrow `SourceHost` interface.
 
-Neither Runtime nor Setup changes `process.env`. The host-level `dsh-superagent/worker-env` entry (`src/worker-env.ts`), outside every instance group, provides `superagentWorkers`, which every instance injects. When it starts it locks `<profile>/.dsh-superagent-workers`, writes the shared git configuration and the dispatchers, and applies the process environment once: the dispatchers first on `PATH`, the shared git configuration and the instance-neutral overrides. It keeps that environment while instances start, finish setup, restart and stop, and restores it once, when it stops and the last instance released its registration. Its `shellEnv` contributor gives each model shell `DSH_SUPERAGENT_WORKER_BIN`, the `worker-bin` directory of the instance that owns the shell's Session or the Session's nearest parent up to eight subagents up; an instance owns its main Session and the worker Sessions of the Tickets in its store.
+Neither Runtime nor Setup changes `process.env`. The host-level `dsh-superagent/worker-env` entry (`src/worker-env.ts`), outside every instance group, provides `superagentWorkers`, which every instance injects. When it starts it locks `<profile>/.dsh-superagent-workers`, writes the shared git configuration and the dispatchers, and applies the process environment once: the dispatchers first on `PATH`, the shared git configuration and the instance-neutral overrides. It keeps that environment while instances start, finish setup, restart and stop, and restores it once, when it stops and the last instance released its registration. Its `shellEnv` contributor gives each model shell `DSH_SUPERAGENT_WORKER_BIN`, the `worker-bin` directory of the instance that owns the shell's Session or the Session's nearest parent up to eight subagents up; an instance owns its main Session and the worker Sessions of the Tickets in its store. Each instance also registers its key, its entry id and, once setup names one, its repository; the entry lists them at `GET /orchestrator/api/instances` for the panel's instance selector, a host-level route like the Grok subscription routes.
 
 | Part | Module | Does |
 | --- | --- | --- |
@@ -294,8 +294,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | --- | --- |
 | `src/index.ts` | The main plugin entry: reads the machine settings, starts the Runtime, and gives it the restart that a save of a Source's account uses |
 | `src/deployment.ts` | The plugin `Config` and `Machine`; `resolveDeployment` and `resolveFeishuBot` read the repository and the accounts from the Source settings, each CLI run as Executor shells run it; `SETUP_FIELDS` lists the Source fields setup reads. The code names no person, account or organization |
-| `src/worker-env.ts` | The host-level `dsh-superagent/worker-env` entry: `WorkerRegistry`, provided as `superagentWorkers`, which owns the process environment, the shared dispatchers and git configuration in `<profile>/.dsh-superagent-workers`, the instances' registrations and the owner of a shell call; and the `shellEnv` contributor of `DSH_SUPERAGENT_WORKER_BIN` |
-| `src/instance.ts` | The instance key's pattern and `managementPrefix`, the URL prefix of an instance's management routes, shared with the panel |
+| `src/worker-env.ts` | The host-level `dsh-superagent/worker-env` entry: `WorkerRegistry`, provided as `superagentWorkers`, which owns the process environment, the shared dispatchers and git configuration in `<profile>/.dsh-superagent-workers`, the instances' registrations and the owner of a shell call; the `shellEnv` contributor of `DSH_SUPERAGENT_WORKER_BIN`; and the `GET /orchestrator/api/instances` route |
+| `src/instance.ts` | The instance key's pattern, `managementPrefix`, the URL prefix of an instance's management routes, and the instance list's path and shape, shared with the panel |
 | `src/setup.ts` | Setup problems: `SetupError`, with a code, the place that fixes it and the English text the log, the main Session and the panel share |
 | `src/policy.ts` | The Policy: the settings schemas by block, the Policy version, the gate and Mandate revalidation |
 | `src/admission.ts` | The admission table's values, each cell's options and defaults, shared with the panel |
@@ -363,6 +363,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/infra/commands.ts` | `Commands`, the CLI transport: `run`; `api` and `pages`, limited to the configured repository and validated; `lark` as the bot; `git`. `CliError` carries the code a command's output reports, such as a GitHub HTTP status, and a command that prints nothing fails with how it ended, never with its arguments; `validItems` skips and counts the malformed items of a list |
 | `src/infra/environment.ts` | The agent's environment: an instance's command shims and git configuration, the shared dispatchers and git configuration, the instance-neutral overrides, `runAsWorker`, and the checks of the environment and of a Ticket's directory |
 | `src/infra/paths.ts` | The package's root, where packaged files are |
+| `src/infra/origin.ts` | `sameOrigin`, the loopback same-origin check of the management routes and the instance list, re-exported by `src/app/http.ts` |
 | `src/infra/text.ts` | Word counts and the chat message limit, `fill` and `sameName` |
 | `src/infra/health.ts` | The `HealthBoard`, every part's health entry, each claimed by its one writer |
 | `src/sources/kind.ts` | The `SourceKind` protocol |
@@ -382,10 +383,10 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/admission-context.ts` | The bounded window an assessment starts from: the first pages of a Trigger's Thread, read through its kind, and the messages around the Trigger |
 | `src/sources/feishu-image.ts` | Reads a Feishu message's image as an attachment for the assessing Session |
 | `src/client/index.tsx` | The client plugin entry: the sidebar entry, the main panel and the page in DeepSeek Harness's Plugin Manager |
-| `src/client/app.tsx` | The panel: header, search, glossary, tabs and the page of the current route |
+| `src/client/app.tsx` | The panel: the selected instance and its selector, header, search, glossary, tabs and the page of the current route |
 | `src/client/provider.tsx` | What every page reads from its host: copy, calls, navigation, notices, the state poll, and `restart`, which reads the state quickly while dsh-superagent restarts |
-| `src/client/api.ts` | Calls and polls of the management API, typed by `src/app/api.ts`, and the Decision filters of the Eval status |
-| `src/client/route.ts` | The tabs, the settings groups, the typed routes that `parseRoute` reads, and the route memory with the settings group opened last |
+| `src/client/api.ts` | Calls and polls of the management API, typed by `src/app/api.ts`, the instance list, and the Decision filters of the Eval status |
+| `src/client/route.ts` | The tabs, the settings groups, the typed routes that `parseRoute` reads, each instance's route memory with the settings group opened last, and the selected instance |
 | `src/client/overview.tsx` | The overview |
 | `src/client/source.tsx`, `trigger.tsx`, `eval.tsx`, `execution.tsx` | One file per stage: its status, and its settings where it has some |
 | `src/client/thread.tsx`, `ticket.tsx` | The record pages: a Thread with its timeline, and a Ticket with its authorization, Inputs and Assignments |
@@ -454,11 +455,11 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/cards.spec.ts` | The rules the built-in text must state, file by file |
 | `tests/model-surface.spec.ts` | Everything models read: tools, prompts, skills and inputs, checked against the tool schemas, the execution environment and the glossary, within a size budget per role |
 | `tests/deployment.spec.ts`, `tests/environment.spec.ts`, `tests/index.spec.ts` | The plugin configuration and setup, which skips the shims and the shared dispatchers; the shims and the dispatchers, run with `sh` and git as workers run them; the plugin entry |
-| `tests/worker-env.spec.ts` | The shared worker environment: the owner of a shell call, the process environment it applies once and restores once, the commands it dispatches, a command no Session owns, and its plugin entry |
+| `tests/worker-env.spec.ts` | The shared worker environment: the owner of a shell call, the process environment it applies once and restores once, the commands it dispatches, a command no Session owns, the instance list and its route, and its plugin entry |
 | `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh` |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
 | `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route |
-| `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, and the panel's search, glossary and route memory |
+| `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, and the panel's search, glossary, route memory and instance selector |
 | `tests/draft.spec.ts`, `tests/prompt-config.spec.ts`, `tests/markdown.spec.ts`, `tests/marks.spec.ts` | Draft states, merges and the save bar's line; the prompt configuration by section and the line diff; the Markdown subset and its links; the mark of every state the views classify |
 | `tests/panel-korean.spec.tsx` | Korean navigation, glossary, Source metadata, search, settings saves, shared pause state and error messages |
 | `tests/locales.spec.ts`, `tests/styles.spec.ts` | English, Chinese and Korean key and placeholder coverage, localized metadata and timestamps, the stylesheet |
