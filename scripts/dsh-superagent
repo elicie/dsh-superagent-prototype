@@ -78,9 +78,17 @@ def processes(profile):
     return found + [pid] if pid not in found and running(pid, profile) else found
 
 
-def state(url):
-    """Fetch health and setup status from the management API, or return None if unreachable."""
-    request = urllib.request.Request(url.rstrip('/') + '/orchestrator/api/state',
+INSTANCE = re.compile(r'(?=.{1,32}$)[a-z0-9]+(?:-[a-z0-9]+)*')
+
+
+def prefix(instance):
+    """Return the management URL prefix of `instance`: `/orchestrator` for the default (empty) one, `/orchestrator-<key>` otherwise (src/instance.ts)."""
+    return '/orchestrator-' + instance if instance else '/orchestrator'
+
+
+def state(url, instance=''):
+    """Fetch health and setup status of `instance` from the management API, or return None if unreachable."""
+    request = urllib.request.Request(url.rstrip('/') + prefix(instance) + '/api/state',
                                      headers={'x-orchestrator-request': '1'})
     try:
         with urllib.request.urlopen(request, timeout=2) as response:
@@ -121,8 +129,8 @@ def outcome(pids, current):
 
 def status(args):
     pids = processes(args.profile)
-    current = state(args.url) if pids else None
-    print(json.dumps({'pids': pids, 'cwd': str(ROOT), 'url': args.url,
+    current = state(args.url, args.instance) if pids else None
+    print(json.dumps({'pids': pids, 'cwd': str(ROOT), 'url': args.url, 'instance': args.instance,
                       'manually_stopped': stopped(args.profile), 'health': current and current['health'],
                       'errors': current and current['errors'], 'setup': current and current['setup'],
                       'feishu': current and current['feishu']}, ensure_ascii=False, indent=2))
@@ -167,7 +175,7 @@ def start(args):
             raise RuntimeError('Both dsh and tmux must be on PATH.')
         exists = subprocess.run(['tmux', 'has-session', '-t', '=' + session],
                                 capture_output=True).returncode == 0
-        if state(args.url) is not None:
+        if state(args.url, args.instance) is not None:
             raise RuntimeError('An existing orchestrator answers at this URL; refusing duplicate startup.')
         stamp = time.strftime('%Y%m%d-%H%M%S')
         log = ARTIFACTS / f'dsh-superagent-{args.profile}-{stamp}-{os.getpid()}.log'
@@ -189,7 +197,7 @@ def start(args):
     (control(args.profile) / 'manually-stopped').unlink(missing_ok=True)
     deadline = time.monotonic() + args.timeout
     while time.monotonic() < deadline:
-        current = state(args.url)
+        current = state(args.url, args.instance)
         if processes(args.profile) and runtime_up(current):
             code = status(args)
             if current['setup']:
@@ -213,6 +221,9 @@ def main():
                         help='DSH profile that loads dsh-superagent; its tmux session is dsh-<profile>.')
     parser.add_argument('--url', default=os.environ.get('DSH_SUPERAGENT_URL') or 'http://127.0.0.1:3082',
                         help='Health-check URL; override after changing the profile port.')
+    parser.add_argument('--instance', default=os.environ.get('DSH_SUPERAGENT_INSTANCE') or '',
+                        help='Instance key of the dsh-superagent entry to check when the profile runs several; empty for the '
+                             'default one. start, stop and restart still act on the whole DSH process.')
     parser.add_argument('--timeout', type=float, default=60, help='Startup timeout in seconds.')
     parser.add_argument('--stop-timeout', type=float, default=300,
                         help='Graceful shutdown timeout in seconds; running Executor Sessions finish their step first.')
@@ -223,6 +234,8 @@ def main():
         parser.error('--timeout and --stop-timeout must be positive')
     if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]*', args.profile):
         parser.error('--profile must be a DSH profile name')
+    if args.instance and not INSTANCE.fullmatch(args.instance):
+        parser.error('--instance must be a lowercase slug of at most 32 characters')
     os.umask(0o077)
     with (control(args.profile) / 'operation.lock').open('a') as lock:
         try:

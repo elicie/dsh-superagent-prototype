@@ -94,8 +94,37 @@ Copy [examples/profile.cordis.patch.yml](../examples/profile.cordis.patch.yml) t
 | --- | --- | --- |
 | `stateDir` | yes | Absolute path: the database, the lock, the command shims in `worker-bin`, the agent's git configuration and, by default, the Ticket directories in `work`. Back it up before upgrades |
 | `promptMaxChars`, `admissionContextMaxPages`, `admissionContextTimeoutMs` | no | The largest saved prompt configuration, and how many Thread pages one assessment reads within what time |
+| `instance` | no | Empty for the only or default instance. Set it only for another instance in the same profile, below: a lowercase slug of at most 32 characters (letters, digits, inner hyphens) |
 
 After the first start, edit machine limits in **Settings → Deployment** or the DeepSeek Harness Plugin Manager. Changes apply without restart. `stateDir` cannot be changed there. Invalid values or unknown configuration keys prevent startup; the log identifies the key.
+
+### Several instances in one profile
+
+One DeepSeek Harness process can run several instances, for example one per repository, on one port. Each has its own `stateDir`, settings, Sources and accounts. Put each instance other than the default one in its own group that isolates the `orchestrator` service, as in [examples/multi-instance.cordis.patch.yml](../examples/multi-instance.cordis.patch.yml):
+
+```yaml
+- insert:
+    - id: superagent-widgets
+      name: cordis:group
+      group: true
+      isolate:
+        orchestrator: true
+      config:
+        - id: superagent-widgets-core
+          name: dsh-superagent
+          config:
+            stateDir: /home/me/.dsh/state/superagent-widgets
+            instance: widgets
+        - id: superagent-widgets-github
+          name: dsh-superagent/github-watch
+```
+
+- The group gives its entries their own `orchestrator` service, so its Source entries serve its dsh-superagent. Without `isolate`, the second dsh-superagent does not start (`service "orchestrator" has been registered`) and its Source fails with `Source kind already registered`.
+- Entry ids must be unique in the whole profile. Prefix them with the instance key; do not reuse the bundle's ids.
+- Each instance needs its own `stateDir` and its own `instance` key. DSH refuses the routes of a second instance with the same key: `webserver: duplicate prefix route "/orchestrator-<instance>"`.
+- The management API of instance `widgets` is at `/orchestrator-widgets/api/`; the default instance keeps `/orchestrator/api/`. Grok subscriptions stay at `/orchestrator/api/subscriptions/grok`, shared by the whole process.
+- The **Superagent** panel shows the default instance. Read another instance through its API, or `scripts/dsh-superagent status --instance widgets`.
+- Use this only while at most one instance has finished setup. Setup sets `PATH` and the git variables of the whole process to its own command shims and git configuration, so a second configured instance would replace the first one's for both.
 
 ## Start and stop
 
@@ -108,7 +137,7 @@ scripts/dsh-superagent status
 
 `stop` and `restart` request graceful shutdown and wait up to five minutes for Executors. They never force-kill the process or touch other tmux sessions.
 
-`status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`.
+`status` prints process ids, health and setup problems. For a different profile or port, use `--profile` and `--url`, or set `DSH_SUPERAGENT_PROFILE` and `DSH_SUPERAGENT_URL`. For another instance in the profile, use `--instance` or `DSH_SUPERAGENT_INSTANCE`; `start`, `stop` and `restart` still act on the whole process.
 
 `status`, `start` and `restart` exit with one of four codes:
 
@@ -160,7 +189,7 @@ Setup must succeed before polling or work starts. Overview lists missing require
 
 The panel uses a local HTTP API that agents can also call. `SETUP.md` uses it to save settings, and the service script reads `GET state`.
 
-Send requests to `http://127.0.0.1:<port>/orchestrator/api/` with `x-orchestrator-request: 1`. The host must be `127.0.0.1:<port>` or `localhost:<port>`. Missing headers or an `Origin` from another site receive 403.
+Send requests to `http://127.0.0.1:<port>/orchestrator/api/`, or `/orchestrator-<instance>/api/` for another instance in the profile, with `x-orchestrator-request: 1`. The host must be `127.0.0.1:<port>` or `localhost:<port>`. Missing headers or an `Origin` from another site receive 403.
 
 API saves have the panel's permissions. They can change execution environment and setup account fields, unlike saves made through the main Session's tools.
 

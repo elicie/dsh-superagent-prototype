@@ -5,6 +5,7 @@ import { SUBSCRIPTION_ERRORS, type SubscriptionError } from '../app/subscription
 import { USER_ERRORS, type UserErrorCode } from '../core/errors.ts'
 import type { TicketStage } from '../core/stage.ts'
 import type { SetupProblem } from '../setup.ts'
+import { DEFAULT_PREFIX } from '../instance.ts'
 
 /** Host rejection identified by a structured user error code and interpolation values. */
 export interface UserFailure { code: UserErrorCode; values: Record<string, string> }
@@ -31,12 +32,15 @@ export interface ApiMessages {
 }
 const isUserError = (code: unknown): code is UserErrorCode => typeof code === 'string' && Object.hasOwn(USER_ERRORS, code)
 
-/** Calls one management endpoint; the `x-orchestrator-request` header marks the request as originating from this page. */
-async function api<T>(messages: ApiMessages, path: string, method: string, body?: unknown): Promise<T> {
+/**
+ * Calls one management endpoint under `prefix` (`/orchestrator`, or `managementPrefix(instance)` from src/instance.ts for another
+ * instance in the same process); the `x-orchestrator-request` header marks the request as originating from this page.
+ */
+async function api<T>(messages: ApiMessages, path: string, method: string, body?: unknown, prefix = DEFAULT_PREFIX): Promise<T> {
   let response: Response
   const json = body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }
   try {
-    response = await fetch(`/orchestrator/api/${path}`, { method, ...json, headers: { 'x-orchestrator-request': '1', ...json.headers } })
+    response = await fetch(`${prefix}/api/${path}`, { method, ...json, headers: { 'x-orchestrator-request': '1', ...json.headers } })
   } catch {
     throw new ApiError(messages.offline, 0, { unreachable: true })
   }
@@ -107,15 +111,18 @@ export const DECISION_KINDS: Readonly<Record<DecisionFilter, string>> = { work: 
 
 export type Call = <K extends keyof Api>(route: K, ...request: {} extends ApiRequest<K> ? [request?: ApiRequest<K>] : [request: ApiRequest<K>])
   => Promise<ApiResponse<K>>
-/** Build a typed route caller that resolves localized error messages on each request. */
-export function caller(messages: () => ApiMessages): Call {
+/**
+ * Build a typed route caller that resolves localized error messages on each request.
+ * `prefix` selects the instance; the default instance and the host-level Grok subscription routes use `/orchestrator`.
+ */
+export function caller(messages: () => ApiMessages, prefix = DEFAULT_PREFIX): Call {
   return (route, ...[request]) => {
     const [method, pattern] = route.split(' ') as [string, string]
     const values = (request ?? {}) as Record<string, unknown> & { query?: Record<string, unknown>; body?: unknown }
     const path = pattern.replace(/:(\w+)/g, (_match, name: string) => encodeURIComponent(String(values[name])))
     const query = Object.entries(values.query ?? {}).filter(([, value]) => value !== undefined && value !== '')
       .map(([name, value]) => `${name}=${encodeURIComponent(String(value))}`).join('&')
-    return api(messages(), query ? `${path}?${query}` : path, method, values.body)
+    return api(messages(), query ? `${path}?${query}` : path, method, values.body, prefix)
   }
 }
 

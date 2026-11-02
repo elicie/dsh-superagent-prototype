@@ -13,6 +13,7 @@ import { SettingsConflict, type Settings } from './settings.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
 import { UserError, type EngineForPeople, type Ticket } from '../core/index.ts'
 import type { Deployment, Machine } from '../deployment.ts'
+import { managementPrefix } from '../instance.ts'
 import type { DshExecutor } from '../executor/dsh.ts'
 import type { Health } from '../sources/host.ts'
 import type { SourceRegistry } from '../sources/registry.ts'
@@ -231,14 +232,17 @@ function match(table: Routes, method: string, segments: string[]) {
 export function registerHttp(ctx: Context, runtime: HttpHost): () => void {
   if (ctx.webServer.host !== '127.0.0.1') throw new Error('Orchestrator management requires a loopback Web server')
   const table = routes(runtime)
+  // The default instance serves `/orchestrator`; another instance of the same process serves its own sibling prefix.
+  const prefix = managementPrefix(runtime.machine?.instance)
+  const api = `${prefix}/api/`
   const disposers = [
-    ctx.webServer.register({ kind: 'prefix', path: '/orchestrator', handler: async (req, res) => {
+    ctx.webServer.register({ kind: 'prefix', path: prefix, handler: async (req, res) => {
       const url = new URL(req.url ?? '/', 'http://localhost')
-      if (!url.pathname.startsWith('/orchestrator/api/')) { res.writeHead(404); res.end(); return }
+      if (!url.pathname.startsWith(api)) { res.writeHead(404); res.end(); return }
       if (!sameOrigin(req, ctx.webServer.port)) { json(res, 403, { error: 'Same-origin management request required' }); return }
       try {
         await runtime.ready
-        const route = match(table, req.method ?? 'GET', url.pathname.slice('/orchestrator/api/'.length).split('/'))
+        const route = match(table, req.method ?? 'GET', url.pathname.slice(api.length).split('/'))
         if (!route) throw new RouteError(404, 'Unknown operation')
         const query = Object.fromEntries(url.searchParams)
         json(res, 200, await route.run({ params: route.params as never, query, body: maxBytes => readBody(req, maxBytes) }))

@@ -1,0 +1,32 @@
+# Example profile configuration with two dsh-superagent instances in one DeepSeek Harness process
+# ($DSH_HOME/profiles/<profile>/cordis.patch.yml). Replace <placeholders> before first start; see
+# "Several instances in one profile" in docs/006-deployment.md.
+- id: webserver
+  config:
+    host: 127.0.0.1
+    port: 3082
+# The default instance: the bundle's own entries. Its management API stays at /orchestrator.
+- id: dsh-superagent
+  config:
+    stateDir: <absolute path, for example /home/me/.dsh/state/superagent>
+# Another instance, with its own state, settings, accounts and Sources. The group gives its entries their own
+# `orchestrator` service, so its Source plugins bind to this instance only. Its API is at /orchestrator-<instance>.
+# Entry ids must be unique in the whole profile; prefix them with the instance key.
+- insert:
+    - id: superagent-widgets
+      name: cordis:group
+      group: true
+      isolate:
+        orchestrator: true
+      config:
+        - id: superagent-widgets-core
+          name: dsh-superagent
+          config:
+            stateDir: <another absolute path, for example /home/me/.dsh/state/superagent-widgets>
+            instance: widgets
+        - id: superagent-widgets-github
+          name: dsh-superagent/github-watch
+        # Optional Feishu Source of this instance; set its bot CLI after enabling.
+        - id: superagent-widgets-feishu
+          name: dsh-superagent/feishu-watch
+          disabled: true
