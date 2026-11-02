@@ -24,6 +24,8 @@ An `idle` Ticket has finished its turn without an outstanding question. A Trigge
 
 Each Ticket gets an Executor Session named `worker-<ticket id>` and a directory named after the Ticket's short name. Directories are created under the configured execution root, which defaults to `<stateDir>/work`.
 
+Executor Sessions are created with their Ticket's directory as working directory and are not registered as DeepSeek Harness workspaces, so they appear under Ungrouped in its sidebar. At start, dsh-superagent removes the workspace registrations it created for Ticket directories in earlier versions. It removes a registration only if the workspace is a direct child of the current execution root and holds no Session other than Executor Sessions of Tickets it knows (and not the main Session). Only the registration goes; directories and Session history stay. A registration under an execution root that was configured earlier stays. Failures are logged and do not delay start.
+
 Executor Sessions run commands without approval as the operator's OS user. Their `dsh-superagent-worker` preset contains the tools needed for work and moves foreground shell commands to background jobs after 5 seconds. This lets a worker receive new messages at the next step instead of waiting for a long command to finish.
 
 The main Session uses `dsh-superagent-router`, with the same 5-second shell and job-wait limits and a smaller tool set for routing. Sessions retain the preset selected at creation. Worker subagents use DeepSeek Harness's `standard` preset.

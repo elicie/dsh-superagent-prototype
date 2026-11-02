@@ -4,6 +4,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { MessageId } from '@deepseek-ai/dsh-llm'
 import { scopeParentOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import { realpath } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { z } from 'zod'
 import { key, liveTicket, type Ticket } from '../core/index.ts'
@@ -30,6 +31,8 @@ export interface SessionsHost {
   /** The `models` health entry, which reports managed sessions waiting on a model-budget retry. */
   readonly health: HealthEntry
   readonly masterId: string
+  /** The current execution root, which holds the Ticket directories. */
+  executionRoot(): string
   readonly lifetime: AbortSignal
   closing(): boolean
   /** Execution environment variables for `ticket`, rendered into its worker's system prompt. */
@@ -134,15 +137,20 @@ export class Sessions {
       if (status === 'idle' && !this.host.closing()) { this.retryHealth.clear(agent.id); this.updateModelHealth() }
     })
   }
-  /** Resolves or creates session `id` in workspace `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`. */
+  /**
+   * Resolves or creates session `id` working in `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`.
+   * The main Session gets a DSH workspace for `cwd`; a worker Session is created with only its `cwd`, so DSH lists it as Ungrouped instead of registering a workspace for every Ticket directory.
+   */
   async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {
     const ctx = this.ctx
     let result = await ctx.sessionController.resolveAgent(id as SessionId)
     if ('error' in result && result.error.code === 'session/not-found') {
-      const workspace = await ctx.workspaceRegistry.create(cwd)
       // A Session keeps the preset it was created with, one of the bundle's own (cordis.patch.yml).
-      await ctx.sessionController.create({ sessionId: id as SessionId, workspaceId: workspace.id,
-        agentPreset: role === 'worker' ? WORKER_PRESET : ROUTER_PRESET })
+      if (role === 'worker') await ctx.sessionController.create({ sessionId: id as SessionId, cwd, agentPreset: WORKER_PRESET })
+      else {
+        const workspace = await ctx.workspaceRegistry.create(cwd)
+        await ctx.sessionController.create({ sessionId: id as SessionId, workspaceId: workspace.id, agentPreset: ROUTER_PRESET })
+      }
       result = await ctx.sessionController.resolveAgent(id as SessionId)
     }
     if ('error' in result) throw result.error
@@ -152,6 +160,30 @@ export class Sessions {
     ctx.permissionPresets.set(result.agent.session, 'danger-full-access')
     await ctx.sessionController.rename({ sessionId: id as SessionId, title })
     return result.agent
+  }
+  /**
+   * Best-effort removal of the DSH workspace registrations this bundle made for Ticket directories before Executor Sessions stopped
+   * being registered. Only the registration goes: the directory and every Session log stay. A workspace is removed only if its
+   * canonical path is a direct child of the canonical current execution root, it holds neither the main Session nor any Session that is
+   * not a worker of a Ticket in the store (a workspace without Sessions counts as none). Idempotent; failures are logged, never thrown.
+   */
+  async releaseWorkspaces(): Promise<void> {
+    const ctx = this.ctx
+    try {
+      const root = await realpath(this.host.executionRoot()).catch(() => undefined)
+      if (!root) return
+      const ours = (sessionId: string) => { const ticketId = ticketOfSession(sessionId); return !!ticketId && !!this.host.store.tickets.get(ticketId) }
+      for (const workspace of ctx.workspaceRegistry.list()) {
+        if (dirname(workspace.path) !== root || workspace.path === root) continue
+        const sessionIds: readonly string[] = workspace.sessionIds
+        if (sessionIds.includes(this.host.masterId) || !sessionIds.every(ours)) continue
+        try { await ctx.workspaceRegistry.delete(workspace.id) } catch (error) {
+          ctx.logger.warn('dsh-superagent could not remove the workspace registration of %s: %s', workspace.path, String(error))
+        }
+      }
+    } catch (error) {
+      ctx.logger.warn('dsh-superagent could not remove the workspace registrations of its Ticket directories: %s', String(error))
+    }
   }
   /** Returns whether `sessionId` already holds the message delivered under `requestId`, or `false` if the session does not exist. */
   async holds(sessionId: string, requestId: string): Promise<boolean> {
