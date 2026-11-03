@@ -72,17 +72,19 @@ function Toast({ text, onDone, holdMs = 3000 }: { text: string; onDone: () => vo
 const stay = () => {}
 const noSession = async () => {}
 /** `prefix` is the management URL prefix of the instance the panel shows (`/orchestrator` for the default one). */
-export function PanelProvider({ t, interval = 5000, openSession = noSession, navigate = stay, back = stay, backLabel = '', prefix,
+export function PanelProvider({ t, interval = 5000, openSession = noSession, navigate = stay, back = stay, backLabel = '', prefix, notice,
   children }: {
   t: T; interval?: number; openSession?: (sessionId: string) => Promise<void>; navigate?: PanelContext['navigate']; back?: () => void
   backLabel?: string; prefix?: string
+  /** A message to show once when the provider mounts. */
+  notice?: string | undefined
   children: ReactNode
 }) {
   // Read the current translator via ref so locale changes do not recreate `call` and restart polling.
   const copy = useRef(t)
   copy.current = t
   const call = useMemo(() => caller(() => messages(copy.current), prefix), [prefix])
-  const [toast, setToast] = useState<{ text: string; id: number }>()
+  const [toast, setToast] = useState<{ text: string; id: number } | undefined>(() => notice ? { text: notice, id: Date.now() } : undefined)
   const notify = useCallback((text: string) => setToast({ text, id: Date.now() }), [])
   // Poll at 1s during a restart until the server goes down and answers again, or time out after 30s if the restart completed between polls.
   const [restarting, setRestarting] = useState<{ down: boolean }>()

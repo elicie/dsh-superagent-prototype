@@ -1,11 +1,12 @@
 /** The shared worker environment: owners of shell calls, the process environment it applies, the dispatchers it keeps, and the plugin entry. */
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { workerBin } from '../src/infra/environment.ts'
-import { INSTANCES_PATH } from '../src/instance.ts'
+import { INSTANCES_PATH, type InstancesView } from '../src/instance.ts'
 import { SHARED_DIRECTORY, WorkerRegistry, apply, type WorkerMember } from '../src/worker-env.ts'
 
 let dir: string
@@ -269,13 +270,13 @@ describe('instance list', () => {
 describe('instance list route', () => {
   type Handler = (req: unknown, res: unknown) => void
   /** Runs the plugin entry against a fake web server of `host`; returns the registered routes and a caller. */
-  async function route(host: string | undefined) {
+  async function route(host: string | undefined, services: Record<string, unknown> = {}) {
     const profile = join(dir, 'profile')
     const routes: { kind: string; path: string; handler: Handler }[] = []
     const warn = vi.fn(), effects: (() => unknown)[] = [], provided = new Map<string, unknown>()
     const webServer = host === undefined ? undefined : { host, port: 3082, register: vi.fn((entry: typeof routes[number]) => { routes.push(entry); return () => {} }) }
     const ctx = {
-      get: (name: string) => name === 'profileContext' ? { dir: profile } : undefined,
+      get: (name: string) => name in services ? services[name] : name === 'profileContext' ? { dir: profile } : undefined,
       logger: { info: vi.fn(), warn },
       effect: (effect: () => unknown) => { effects.push(effect) },
       provide: (name: string, value: unknown) => { provided.set(name, value) },
@@ -292,12 +293,18 @@ describe('instance list route', () => {
       routes[0]!.handler({ method, url, headers }, { writeHead: (code: number, h: Record<string, string>) => { status = code; head = h }, end: (data: string) => { text = data } })
       return { status, head, body: JSON.parse(text) as unknown }
     }
+    /** A same-origin request with a body, answered asynchronously. */
+    const send = (method: string, body: string) => new Promise<{ status: number; body: unknown }>(resolve => {
+      let status = 0
+      const req = Object.assign(Readable.from([Buffer.from(body)]), { method, url: INSTANCES_PATH, headers: { host: '127.0.0.1:3082', 'x-orchestrator-request': '1' } })
+      routes[0]!.handler(req, { writeHead: (code: number) => { status = code }, end: (data: string) => { resolve({ status, body: JSON.parse(data) as unknown }) } })
+    })
     const restore = async () => {
       for (const effect of effects) await (effect() as () => Promise<void>)()
       for (const name of Object.keys(process.env)) if (!(name in before)) delete process.env[name]
       Object.assign(process.env, before)
     }
-    return { registry, routes, call, warn, restore, webServer }
+    return { registry, routes, call, send, warn, restore, webServer }
   }
   it('answers the list to a same-origin GET of exactly its path and refuses anything else', async () => {
     const { registry, routes, call, restore } = await route('127.0.0.1')
@@ -308,15 +315,53 @@ describe('instance list route', () => {
       const ok = call('GET', INSTANCES_PATH)
       expect(ok.status).toBe(200)
       expect(ok.head).toMatchObject({ 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
-      expect(ok.body).toEqual({ instances: [{ instance: 'a', prefix: '/orchestrator-a', entry: 'entry-a', repository: 'me/a' }] })
+      expect(ok.body).toEqual({ instances: [{ instance: 'a', prefix: '/orchestrator-a', entry: 'entry-a', repository: 'me/a' }],
+        adding: { available: false, reason: 'no-profile' } })
       expect(call('GET', `${INSTANCES_PATH}?x=1`).status).toBe(200)
       expect(call('GET', INSTANCES_PATH, { host: '127.0.0.1:3082' }).status).toBe(403)
       expect(call('GET', INSTANCES_PATH, { host: 'evil.test', 'x-orchestrator-request': '1' }).status).toBe(403)
       expect(call('GET', INSTANCES_PATH, { host: '127.0.0.1:3082', 'x-orchestrator-request': '1', origin: 'http://evil.test' }).status).toBe(403)
       expect(call('GET', `${INSTANCES_PATH}/more`).status).toBe(404)
-      expect(call('POST', INSTANCES_PATH).status).toBe(404)
+      expect(call('PUT', INSTANCES_PATH).status).toBe(404)
+      expect(call('POST', `${INSTANCES_PATH}/more`).status).toBe(404)
+      expect(call('POST', INSTANCES_PATH, { host: '127.0.0.1:3082' }).status).toBe(403)
       await a.release()
     } finally { await restore() }
+  })
+  it('adds an instance to the profile on a same-origin POST and lists it', async () => {
+    const profile = join(dir, 'profile'), patchPath = join(profile, 'cordis.patch.yml')
+    mkdirSync(profile, { recursive: true }); writeFileSync(patchPath, '[]\n')
+    let registry: WorkerRegistry | undefined
+    const joined: { release(): Promise<void> }[] = []
+    const hmr = {
+      runExclusive: <T>(operation: () => Promise<T>) => operation(),
+      reconcileProfile: vi.fn(async (required: string[] = []) => {
+        const text = readFileSync(patchPath, 'utf8')
+        if (required.length) joined.push(registry!.join(member('b', [], { instance: 'b', entry: 'superagent-b-core', stateDir: /stateDir: "([^"]+)"/.exec(text)![1]! })))
+        return { warnings: [], pending: [] }
+      }),
+    }
+    const loader = { entries: () => [{ options: { id: 'dsh-superagent', name: 'dsh-superagent' } }] }
+    const rig = await route('127.0.0.1', { profileContext: { dir: profile, patchPath }, hmr, loader })
+    registry = rig.registry
+    try {
+      expect((await rig.send('POST', '{"instance":"b"}')).body).toMatchObject({ code: 'unavailable' })
+      const def = registry.join(member('main', [], { instance: '', entry: 'dsh-superagent' }))
+      expect(rig.call('GET', INSTANCES_PATH).body).toMatchObject({ adding: { available: true, stateDirBase: join(dir, 'main') } })
+      const added = await rig.send('POST', '{"instance":"b"}')
+      expect(added).toEqual({ status: 201, body: { applied: true, stateDir: join(dir, 'main-b'),
+        instance: { instance: 'b', prefix: '/orchestrator-b', entry: 'superagent-b-core' } } })
+      expect(readFileSync(patchPath, 'utf8')).toContain('instance: "b"')
+      expect((rig.call('GET', INSTANCES_PATH).body as InstancesView).instances.map(view => view.instance)).toEqual(['', 'b'])
+      expect(await rig.send('POST', '{"instance":"b"}')).toMatchObject({ status: 409, body: { code: 'exists' } })
+      expect(await rig.send('POST', '{"instance":"B"}')).toMatchObject({ status: 400, body: { code: 'invalid' } })
+      expect(await rig.send('POST', 'nope')).toMatchObject({ status: 400, body: { code: 'invalid' } })
+      expect(await rig.send('POST', JSON.stringify({ instance: 'c', pad: 'x'.repeat(10_000) }))).toMatchObject({ status: 400, body: { code: 'invalid' } })
+      hmr.reconcileProfile.mockRejectedValueOnce(new Error('refused'))
+      expect(await rig.send('POST', '{"instance":"c"}')).toMatchObject({ status: 500, body: { code: 'failed' } })
+      expect(readFileSync(patchPath, 'utf8')).not.toContain('instance: "c"')
+      for (const membership of [def, ...joined]) await membership.release()
+    } finally { await rig.restore() }
   })
   it('skips the route with a warning on a non-loopback web server and works without one', async () => {
     const open = await route('0.0.0.0')

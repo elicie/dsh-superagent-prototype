@@ -24,6 +24,8 @@ When one DeepSeek Harness process runs several Superagent instances (006 Deploym
 
 The browser remembers the selected instance, and each instance remembers its own last page. Switching instances reloads the panel at that page. An instance that is restarting, as after saving settings, briefly leaves the list: the panel stays on it and marks it **unavailable** until it answers again. The Deployment settings edit the selected instance's own plugin entry. The Grok subscription card in the host's model settings belongs to the whole process, not to an instance.
 
+The Deployment settings also list every instance of the process, with its repository and management prefix. When the host can add instances, a form adds one by key: it previews the management prefix and state directory, writes the instance to the Harness profile and starts it without a restart. The panel then switches to the new instance, whose Overview shows its setup. When the Harness cannot start it yet, the form says the instance starts after a restart; when it cannot add instances at all, the section says why (no profile, no live profile reload, or no running default instance). With a single instance, the form warns that once a second one runs, commands outside any Superagent Session, such as the sidebar terminal, MCP servers and the Harness's own git, lose the agent's gh and git credentials until the Harness restarts with one instance. On a host that reports whether it can add instances, the instance selector ends in **Add instance…**, which opens these settings without switching. In the Plugin Manager the same section adds an instance and points to the panel's selector to open it.
+
 ## Three questions
 
 Opening the panel answers three questions, in this order:

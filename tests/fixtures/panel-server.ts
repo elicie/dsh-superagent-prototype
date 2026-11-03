@@ -6,7 +6,8 @@ import { afterEach, beforeEach, expect, vi } from 'vitest'
 import { z } from 'zod'
 import type { ConfigForm, ConfigFormSnapshot } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { Api, ApiResponse, RouteParams } from '../../src/app/api.ts'
-import { DEFAULT_PREFIX, INSTANCES_PATH, type InstancesView } from '../../src/instance.ts'
+import { DEFAULT_PREFIX, INSTANCES_PATH, INSTANCE_PATTERN, instanceEntryIds, managementPrefix, type AddInstanceResult,
+  type InstanceView, type InstancesView } from '../../src/instance.ts'
 import { SKILL_NAME, SKILL_PREFIX, TEAM_SECTIONS, builtInBase, builtInPart, builtInParts, composePrompt, composeSkill, defaultPrompts,
   environmentSection, policySection, promptParts } from '../../src/app/prompts.ts'
 import type { DroppedReply, HistoryView, Problem, PromptsView, SetupView, SourceStatusRow, SourceView, StateView, ThreadPageView,
@@ -24,6 +25,9 @@ import type { Health } from '../../src/sources/host.ts'
 import type { SourceKind } from '../../src/sources/kind.ts'
 import { testDeployment } from './deployment.ts'
 
+/** An instance as the host lists it; the default instance has the empty key. */
+export const instanceView = (key: string, repository?: string): InstanceView => ({ instance: key, prefix: managementPrefix(key),
+  entry: key ? instanceEntryIds(key).core : 'dsh-superagent', ...repository ? { repository } : {} })
 export const MEMBER = 'ou_alice'
 const ALLOWED: Record<string, { id: string; name?: string }[]> = { feishu: [{ id: MEMBER, name: 'Alice' }], github: [{ id: 'alice' }] }
 type Actor = TriggerRow['actor']
@@ -103,6 +107,13 @@ export interface PanelServer {
   instances?: InstancesView
   /** Requests to `INSTANCES_PATH`. */
   listings: number
+  /** Bodies of `POST INSTANCES_PATH`. */
+  additions: unknown[]
+  /**
+   * What `POST INSTANCES_PATH` answers instead of adding the instance, such as a 409 `exists`; a 2xx `applied: false` answer adds
+   * nothing. Without it the POST adds the instance to `instances` and answers 201 as a running one.
+   */
+  addAnswer?: { status: number; body: unknown }
   /** Requests with undeclared query params or invalid body presence; asserted empty after each test. */
   misuse: string[]
   queued: Set<string>
@@ -259,7 +270,7 @@ function initial(): PanelServer {
     en: 'Feishu message' } }
   const defaults = { revision: 0, previousRevision: null, savedAt: '', source: 'defaults' }
   return {
-    health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [], listings: 0,
+    health: {}, down: false, pending: 0, opened: [], requests: [], misuse: [], queued: new Set(), dropped: [], failing: [], listings: 0, additions: [],
     forms: {},
     setup: { machine: MACHINE, problem: null, feishuProblem: null,
       accounts: { repository: 'acme/widgets', agent: 'agent-bot', feishu: { appId: 'cli_bot', brand: 'feishu', botId: 'ou_bot',
@@ -448,6 +459,23 @@ class Reply extends Response {
   override async text() { server.pending--; return super.text() }
 }
 
+/** Answer `POST INSTANCES_PATH` as the host does: a JSON body with the key, then the canned `addAnswer` or a running new instance. */
+function addInstance(init: RequestInit): Response {
+  if (new Headers(init.headers).get('content-type') !== 'application/json') server.misuse.push(`${INSTANCES_PATH} POST without JSON`)
+  const body: unknown = init.body ? JSON.parse(String(init.body)) : undefined
+  server.additions.push(body)
+  const key = (body as { instance?: unknown } | undefined)?.instance
+  if (server.addAnswer) return new Reply(server.addAnswer.body, server.addAnswer.status)
+  const { instances, adding } = server.instances ?? {}
+  if (!instances || adding?.available !== true) return new Reply({ error: 'Instances cannot be added.', code: 'unavailable' }, 409)
+  if (typeof key !== 'string' || !INSTANCE_PATTERN.test(key)) return new Reply({ error: 'Not an instance key.', code: 'invalid' }, 400)
+  if (instances.some(view => view.instance === key)) return new Reply({ error: `Instance ${key} exists.`, code: 'exists' }, 409)
+  const instance = { instance: key, prefix: managementPrefix(key), entry: instanceEntryIds(key).core }
+  instances.push(instance)
+  const result: AddInstanceResult = { applied: true, instance, stateDir: `${adding.stateDirBase}-${key}` }
+  return new Reply(result, 201)
+}
+
 export function usePanelServer(cleanup: () => void) {
   beforeEach(() => {
     sessionStorage.clear(); localStorage.clear()
@@ -457,6 +485,7 @@ export function usePanelServer(cleanup: () => void) {
       const address = new URL(url, 'http://127.0.0.1:3082')
       if (new Headers(init?.headers).get('x-orchestrator-request') !== '1') server.misuse.push(`${address.pathname} without its header`)
       if (address.pathname === INSTANCES_PATH) {
+        if (init?.method === 'POST') return addInstance(init)
         server.listings++
         return server.instances ? new Reply(server.instances, 200) : new Reply({ error: 'Unknown operation' }, 404)
       }

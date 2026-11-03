@@ -2,19 +2,100 @@
  * Deployment settings view shared between the panel Settings tab and the DSH Plugin Manager config page.
  * Edits host-level plugin configuration limits through DSH `ConfigForm` when writable.
  */
-import { useCallback, useMemo, useSyncExternalStore } from 'react'
+import { createContext, useCallback, useContext, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { ConfigPageForm } from '@deepseek-ai/dsh-client-ui-plugin-manager/client'
+import { INSTANCE_PATTERN, managementPrefix, type InstanceView } from '../instance.ts'
 import { LIMITS } from '../limits.ts'
-import type { SetupView } from './api.ts'
-import { InfoTip, Input } from './controls.tsx'
+import { AddInstanceFailure, addInstance, useInstances, type InstancesData, type SetupView } from './api.ts'
+import { Button, Icon, InfoTip, Input } from './controls.tsx'
 import { SaveBar, useDraft } from './draft.tsx'
 import { PanelProvider, usePanel, usePanelData } from './provider.tsx'
 import { Field, Fields } from './settings-kit.tsx'
-import { setupText, type T } from './text.ts'
+import { errorText, setupText, type T } from './text.ts'
 import { CheckSetupButton, Hint, KeyValues, Section, SetupMessage } from './widgets.tsx'
 
 export type DeploymentForm = ConfigPageForm | undefined
+
+/** The instance list and what the Deployment settings may do with it, given by the page that shows them. */
+export interface InstancesControl extends Pick<InstancesData, 'instances' | 'adding' | 'reload'> {
+  /**
+   * Show a newly added, running instance, with a notice for its first screen. Absent where the page cannot change the instance it
+   * shows, as in DeepSeek Harness's Plugin Manager, which then only confirms.
+   */
+  switchTo?: (instance: InstanceView, notice: string) => void
+}
+export const InstancesContext = createContext<InstancesControl | undefined>(undefined)
+
+/** What a refused or failed addition says, by the host's code; `error` is the host's own text. */
+function addFailureText(t: T, failure: unknown, key: string): string {
+  if (!(failure instanceof AddInstanceFailure)) return errorText(failure)
+  const { status, code, message } = failure
+  if (code) return t(`instanceError.${code}`, { key, error: message || t('serverError', { status }) })
+  return !status ? t('offline') : status === 404 && !message ? t('hostNotRunning') : status >= 500 ? t('serverError', { status })
+    : t('requestFailed', { status })
+}
+/**
+ * Every instance of the process, and a form to add one when the host can. Process-level: it lists the same instances whichever
+ * one the page shows. Hidden when the host does not list instances, or when there is only one and no way to add another.
+ */
+function InstancesSection() {
+  const { t, notify } = usePanel()
+  const control = useContext(InstancesContext)
+  const [key, setKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState<{ error: boolean; text: string }>()
+  const running = useRef(false)
+  if (!control?.instances || (control.instances.length < 2 && !control.adding)) return null
+  const { instances, adding, reload, switchTo } = control
+  const value = key.trim()
+  const problem = !value ? undefined : !INSTANCE_PATTERN.test(value) ? 'invalid' : instances.some(view => view.instance === value) ? 'taken'
+    : undefined
+  const valid = !!value && !problem
+  const add = async () => {
+    if (running.current || !valid) return
+    running.current = true; setBusy(true); setNote(undefined)
+    try {
+      const added = await addInstance(value)
+      await reload()
+      setKey('')
+      if (!added.applied) setNote({ error: false, text: `${t('instanceAddedRestart', { name: value })}${added.restartReason
+        ? ` ${t('instanceRestartReason', { reason: added.restartReason })}` : ''}` })
+      else if (switchTo) switchTo(added.instance, t('instanceAdded', { name: value }))
+      else notify(t('instanceAddedElsewhere', { name: value }))
+    } catch (failure) {
+      setNote({ error: true, text: addFailureText(t, failure, value) })
+      // The host's refusal may mean the list or the ability to add changed since it was read.
+      if (failure instanceof AddInstanceFailure && (failure.code === 'exists' || failure.code === 'unavailable')) void reload()
+    } finally { running.current = false; setBusy(false) }
+  }
+  return <Section title={t('instances')} count={instances.length} hint={t('instancesHint')}>
+    <ul className="dt-instances">{instances.map(view => <li key={view.instance}>
+      <span className="dt-instance-key">{view.instance || t('instanceDefaultKey')}</span>
+      <span className={view.repository ? 'dt-instance-repository' : 'dt-hint'}>{view.repository ?? t('instanceNotSetUp')}</span>
+      <span className="dt-mono" title={t('instancePrefix')}>{view.prefix}</span>
+    </li>)}</ul>
+    {adding?.available === false && <Hint>{t(`instanceAddOff.${adding.reason}`)}</Hint>}
+    {adding?.available === true && <div className="dt-add-instance">
+      <Field label={t('instanceKey')} note={problem === 'taken' ? <span className="dt-error">{t('instanceKeyTaken', { key: value })}</span>
+        : <span className={problem ? 'dt-error' : undefined}>{t('instanceKeyRule')}</span>}>
+        <Input value={key} placeholder="tools" autoComplete="off" autoCapitalize="none" spellCheck={false} aria-invalid={!!problem}
+          onChange={event => { setKey(event.target.value); setNote(undefined) }}
+          // Enter adds the instance instead of submitting the limits form this section sits in.
+          onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); void add() } }} />
+      </Field>
+      {valid && <KeyValues rows={[[t('instancePrefix'), <span className="dt-mono">{managementPrefix(value)}</span>],
+        [t('deploymentStateDir'), <span className="dt-mono">{`${adding.stateDirBase}-${value}`}</span>]]} />}
+      <Hint>{t('instanceAddIntro')}</Hint>
+      {instances.length === 1 && <p className="dt-banner">{t('instanceAddShared')}</p>}
+      <div className="dt-row-buttons">
+        <Button variant="primary" icon={<Icon name="plus" size={14} />} disabled={!valid || busy}
+          onClick={() => { void add() }}>{busy ? t('instanceAdding') : t('instanceAdd')}</Button>
+      </div>
+    </div>}
+    {note && <p className={note.error ? 'dt-error' : 'dt-hint'} role={note.error ? 'alert' : 'status'}>{note.text}</p>}
+  </Section>
+}
 type Op = Parameters<ConfigPageForm['mutate']>[0][number]
 
 const MACHINE_LIMITS = ['promptMaxChars', 'admissionContextMaxPages', 'admissionContextTimeoutMs'] as const
@@ -66,6 +147,7 @@ export function DeploymentPage({ setup, form, accounts: showAccounts }: { setup:
           [t('deploymentAgent'), accounts ? `@${accounts.agent}` : '—'], [t('deploymentFeishu'), feishu]]} />
         <Hint>{t('deploymentAccountsWhere')}</Hint>
       </Section>}
+      <InstancesSection />
       <Section title={t('deploymentMachine')}>
         {readOnlyHint && <Hint>{readOnlyHint}</Hint>}
         <div className="dt-field">
@@ -83,6 +165,12 @@ export function DeploymentPage({ setup, form, accounts: showAccounts }: { setup:
   </form>
 }
 
+/** The Plugin Manager page lists the instances itself, as no panel above it does; it can add one, not switch to it. */
+function StandaloneInstances({ children }: { children: ReactNode }) {
+  const { instances, adding, reload } = useInstances()
+  const control = useMemo(() => ({ instances, adding, reload }), [instances, adding, reload])
+  return <InstancesContext.Provider value={control}>{children}</InstancesContext.Provider>
+}
 /** Plugin Manager config page; includes derived repository and accounts because Source settings live in the main panel. */
 function PluginPage({ form }: { form: DeploymentForm }) {
   const { t } = usePanel()
@@ -94,5 +182,5 @@ function PluginPage({ form }: { form: DeploymentForm }) {
 }
 /** DSH Plugin Manager config view entry; renders nothing in `summary` mode because DSH displays the package description. */
 export function PluginConfig({ t, view, form }: { t: T; view: 'page' | 'summary'; form: DeploymentForm }) {
-  return view === 'page' ? <PanelProvider t={t} interval={10_000}><PluginPage form={form} /></PanelProvider> : null
+  return view === 'page' ? <PanelProvider t={t} interval={10_000}><StandaloneInstances><PluginPage form={form} /></StandaloneInstances></PanelProvider> : null
 }

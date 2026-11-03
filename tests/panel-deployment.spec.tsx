@@ -4,9 +4,9 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { PluginConfig } from '../src/client/deployment.tsx'
 import { expect, it, onTestFinished, vi } from 'vitest'
-import { zh } from '../src/client/locales.ts'
+import { ko, zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, settle, all, find, tab, click, type, text, field, at, translator } from './fixtures/panel.tsx'
-import { server, problemOf, fakeForm } from './fixtures/panel-server.ts'
+import { server, problemOf, fakeForm, instanceView as instance } from './fixtures/panel-server.ts'
 
 usePanel()
 it('saves this machine\'s settings in the Deployment settings through DSH\'s configuration form, without a restart', async () => {
@@ -149,4 +149,188 @@ it('ends a restart that never stopped answering after half a minute, and reads t
   expect(reads()).toBe(ended)
   await advance(2_000)
   expect(reads()).toBe(ended + 1)
+})
+
+const ADDING = { available: true, stateDirBase: '/srv/dsh-superagent' } as const
+const deployment = () => at({ page: 'settings', query: { group: 'deployment' } })
+const rows = () => all('.dt-instances li').map(row => row.textContent)
+const key = () => field<HTMLInputElement>(zh.instanceKey)
+const addButton = () => find(zh.instanceAdd) as HTMLButtonElement
+const prefixes = () => [...new Set(server.requests.map(request => request.prefix ?? '/orchestrator'))]
+
+it('lists the instances in the Deployment settings, and previews and validates a new key as it is typed', async () => {
+  server.form = fakeForm().form
+  server.instances = { instances: [instance('', 'acme/widgets'), instance('tools')], adding: ADDING }
+  deployment()
+  await mount()
+  expect(rows()).toEqual(['默认acme/widgets/orchestrator', 'tools尚未设置仓库/orchestrator-tools'])
+  expect(addButton().disabled).toBe(true)
+  expect(text()).toContain(zh.instanceAddIntro)
+  // More than one instance already run, so the warning about commands outside the Sessions is for the first addition only.
+  expect(text()).not.toContain(zh.instanceAddShared)
+  expect(text()).not.toContain(zh.instanceKeyTaken.replace('{key}', ''))
+  for (const invalid of ['Tools', 'a_b', '-a', 'a--b', 'a'.repeat(33)]) {
+    await type(key(), invalid)
+    expect(document.querySelector('.dt-field small .dt-error')?.textContent).toBe(zh.instanceKeyRule)
+    expect(key().getAttribute('aria-invalid')).toBe('true')
+    expect(addButton().disabled).toBe(true)
+  }
+  await type(key(), 'tools')
+  expect(document.querySelector('.dt-field small .dt-error')?.textContent).toBe(zh.instanceKeyTaken.replace('{key}', 'tools'))
+  expect(addButton().disabled).toBe(true)
+  expect(text()).not.toContain('/orchestrator-tools/')
+  await type(key(), ' b-2 ')
+  expect(document.querySelector('.dt-field small .dt-error')).toBeNull()
+  expect(key().getAttribute('aria-invalid')).toBe('false')
+  // The preview names the management prefix and the state directory the new instance would get.
+  expect(all('.dt-kv dd').map(item => item.textContent)).toContain('/orchestrator-b-2')
+  expect(all('.dt-kv dd').map(item => item.textContent)).toContain('/srv/dsh-superagent-b-2')
+  expect(addButton().disabled).toBe(false)
+  expect(server.additions).toEqual([])
+})
+
+it('warns a single instance that commands outside any Session lose the agent\'s credentials once a second runs', async () => {
+  server.form = fakeForm().form
+  server.instances = { instances: [instance('', 'acme/widgets')], adding: ADDING }
+  deployment()
+  await mount()
+  expect(rows()).toEqual(['默认acme/widgets/orchestrator'])
+  expect(document.querySelector('.dt-banner')?.textContent).toBe(zh.instanceAddShared)
+  expect(document.querySelector('.dt-instance-select')).toBeNull()
+})
+
+it('adds an instance and switches the panel to it, which then calls the new management prefix', async () => {
+  const { form: shared, mutations } = fakeForm()
+  server.form = shared
+  server.instances = { instances: [instance('', 'acme/widgets')], adding: ADDING }
+  deployment()
+  await mount()
+  await type(key(), 'tools')
+  // Enter adds the instance instead of saving the limits form the section sits in.
+  await act(async () => { key().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })) })
+  await settle()
+  expect(server.additions).toEqual([{ instance: 'tools' }])
+  expect(mutations).toEqual([])
+  const selector = document.querySelector<HTMLSelectElement>(`select[aria-label="${zh.instanceLabel}"]`)!
+  expect(selector.value).toBe('tools')
+  expect([...selector.options].map(option => option.textContent)).toEqual(['acme/widgets', 'tools', zh.instanceAddOption])
+  expect(localStorage.getItem('dsh-superagent/instance')).toBe('tools')
+  expect(document.querySelector('.dt-toast')?.textContent).toBe(zh.instanceAdded.replace('{name}', 'tools'))
+  // The new instance opens at its Overview, and its own calls go to its own prefix.
+  expect(all('[role="tab"][aria-selected="true"]').map(item => item.textContent)).toEqual([zh['tab.overview']])
+  expect(prefixes()).toContain('/orchestrator-tools')
+  expect(server.requests.filter(request => request.prefix === '/orchestrator-tools').map(request => request.path)).toContain('state')
+  // Its Deployment settings list both, and no longer warn.
+  await click(tab(zh['tab.settings']))
+  await click(find(zh['settingsGroup.deployment'], '.dt-settings-link'))
+  expect(rows()).toEqual(['默认acme/widgets/orchestrator', 'tools尚未设置仓库/orchestrator-tools'])
+  expect(document.querySelector('.dt-banner')).toBeNull()
+})
+
+it('says an addition that waits for a Harness restart is not running yet, and stays on the instance shown', async () => {
+  server.form = fakeForm().form
+  server.instances = { instances: [instance('', 'acme/widgets')], adding: ADDING }
+  server.addAnswer = { status: 202, body: { applied: false, instance: instance('tools'), stateDir: '/srv/dsh-superagent-tools',
+    restartReason: 'The profile cannot be reloaded' } }
+  deployment()
+  await mount()
+  await type(key(), 'tools')
+  await click(zh.instanceAdd)
+  expect(document.querySelector('[role="status"].dt-hint')?.textContent).toBe(`${zh.instanceAddedRestart.replace('{name}', 'tools')} ${
+    zh.instanceRestartReason.replace('{reason}', 'The profile cannot be reloaded')}`)
+  expect(key().value).toBe('')
+  expect(document.querySelector('.dt-instance-select')).toBeNull()
+  expect(localStorage.getItem('dsh-superagent/instance')).toBeNull()
+  expect(prefixes()).toEqual(['/orchestrator'])
+  // Typing again clears the message.
+  await type(key(), 'b')
+  expect(document.querySelector('[role="status"].dt-hint')).toBeNull()
+})
+
+it('answers each refusal of the host in words, and the host\'s own text for a failure', async () => {
+  server.form = fakeForm().form
+  server.instances = { instances: [instance('', 'acme/widgets')], adding: ADDING }
+  deployment()
+  await mount()
+  const refuse = async (status: number, body: unknown) => {
+    server.addAnswer = { status, body }
+    await type(key(), 'tools')
+    await click(zh.instanceAdd)
+    return document.querySelector('p[role="alert"].dt-error')?.textContent
+  }
+  expect(await refuse(400, { error: 'x', code: 'invalid' })).toBe(zh['instanceError.invalid'].replace('{key}', 'tools'))
+  expect(await refuse(409, { error: 'x', code: 'exists' })).toBe(zh['instanceError.exists'].replace('{key}', 'tools'))
+  const listings = server.listings
+  expect(await refuse(409, { error: 'x', code: 'unavailable' })).toBe(zh['instanceError.unavailable'])
+  // A refusal that the list or the ability to add changed reads the list again.
+  expect(server.listings).toBeGreaterThan(listings)
+  expect(await refuse(500, { error: 'DSH refused the profile: bad plugin', code: 'failed' })).toBe(zh['instanceError.failed']
+    .replace('{error}', 'DSH refused the profile: bad plugin'))
+  expect(await refuse(503, {})).toBe(zh.serverError.replace('{status}', '503'))
+  expect(await refuse(404, {})).toBe(zh.hostNotRunning)
+  // Nothing was added or switched to by any of them.
+  expect(localStorage.getItem('dsh-superagent/instance')).toBeNull()
+  expect(key().value).toBe('tools')
+})
+
+it('says in words why an instance cannot be added, instead of the form', async () => {
+  server.form = fakeForm().form
+  deployment()
+  for (const reason of ['no-profile', 'no-reload', 'no-default'] as const) {
+    server.instances = { instances: [instance('', 'acme/widgets')], adding: { available: false, reason } }
+    await remount()
+    expect(text()).toContain(zh[`instanceAddOff.${reason}`])
+    expect(all('input').some(input => input.id && all('label').some(label => (label as HTMLLabelElement).htmlFor === input.id
+      && label.textContent === zh.instanceKey))).toBe(false)
+    expect(all('button').some(button => button.textContent === zh.instanceAdd)).toBe(false)
+  }
+})
+
+it('shows no way to add an instance without a statement from the host, and no section for a lone instance', async () => {
+  server.form = fakeForm().form
+  deployment()
+  server.instances = { instances: [instance('', 'acme/widgets')] }
+  await mount()
+  expect(document.querySelector('.dt-instances')).toBeNull()
+  // Several instances are still listed, without a form.
+  server.instances = { instances: [instance('', 'acme/widgets'), instance('tools', 'acme/tools')] }
+  await remount()
+  expect(rows()).toEqual(['默认acme/widgets/orchestrator', 'toolsacme/tools/orchestrator-tools'])
+  expect(() => key()).toThrow()
+  // A host without the list shows none of it.
+  server.instances = undefined
+  await remount()
+  expect(document.querySelector('.dt-instances')).toBeNull()
+})
+
+it('reads the instance section in Korean', async () => {
+  server.form = fakeForm().form
+  server.instances = { instances: [instance('', 'acme/widgets')], adding: ADDING }
+  deployment()
+  await mount(ko)
+  for (const label of [ko.instances, ko.instanceAddIntro, ko.instanceAddShared, ko.instanceKeyRule]) expect(text()).toContain(label)
+  expect(find(ko.instanceAdd).tagName).toBe('BUTTON')
+  expect(rows()).toEqual([`${ko.instanceDefaultKey}acme/widgets/orchestrator`])
+})
+
+it('adds an instance from the Plugin Manager page without switching, and only confirms', async () => {
+  server.form = fakeForm().form
+  server.instances = { instances: [instance('', 'acme/widgets')], adding: ADDING }
+  const container = document.createElement('div'); document.body.append(container)
+  const root = createRoot(container)
+  onTestFinished(() => { act(() => { root.unmount() }); container.remove() })
+  const form = server.form
+  await act(async () => { root.render(<PluginConfig t={translator(zh)} view="page" form={{ state: form.getSnapshot(), mutate: form.mutate }} />) })
+  await settle()
+  expect(rows()).toEqual(['默认acme/widgets/orchestrator'])
+  await type(key(), 'tools')
+  await click(zh.instanceAdd)
+  expect(server.additions).toEqual([{ instance: 'tools' }])
+  expect(document.querySelector('.dt-toast')?.textContent).toBe(zh.instanceAddedElsewhere.replace('{name}', 'tools'))
+  expect(localStorage.getItem('dsh-superagent/instance')).toBeNull()
+  expect(prefixes()).toEqual(['/orchestrator'])
+  // The list was read again and now has the new instance, which the form refuses to add twice.
+  expect(rows()).toEqual(['默认acme/widgets/orchestrator', 'tools尚未设置仓库/orchestrator-tools'])
+  await type(key(), 'tools')
+  expect(addButton().disabled).toBe(true)
 })

@@ -2,10 +2,10 @@
 // Panel search, glossary, route persistence, host-down fallback, and the instance selector.
 import { act } from 'react'
 import { expect, it, onTestFinished, vi } from 'vitest'
-import { managementPrefix, type InstanceView } from '../src/instance.ts'
+import { managementPrefix } from '../src/instance.ts'
 import { en, ko, zh } from '../src/client/locales.ts'
 import { usePanel, mount, remount, settle, all, at, click, type, tab, text, field } from './fixtures/panel.tsx'
-import { server, found, fakeForm, MACHINE } from './fixtures/panel-server.ts'
+import { server, found, fakeForm, instanceView, MACHINE } from './fixtures/panel-server.ts'
 
 usePanel()
 it('states why a filtered search result has no Thread instead of opening an empty one', async () => {
@@ -93,8 +93,7 @@ it('shows the answer to the latest search only', async () => {
   expect(all('.dt-search-results .dt-row-title').map(title => title.textContent)).toEqual(['new message'])
 })
 
-const instance = (key: string, repository?: string): InstanceView => ({ instance: key, prefix: managementPrefix(key),
-  entry: key ? `superagent-${key}-core` : 'dsh-superagent', ...repository ? { repository } : {} })
+const instance = instanceView
 const selector = (label = zh.instanceLabel) => document.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)
 const options = () => [...selector()!.options].map(option => option.textContent)
 const prefixes = () => [...new Set(server.requests.map(request => request.prefix ?? managementPrefix()))]
@@ -191,4 +190,37 @@ it('keeps a selected instance that was never listed, says it is not answering, a
   await type(selector()!, '')
   expect(selector()).toBeNull()
   expect(prefixes()).toEqual(['/orchestrator'])
+})
+
+it('ends the selector in "Add instance…" when the host can add one, and opens the Deployment settings of the instance shown', async () => {
+  const adding = { available: true, stateDirBase: '/srv/dsh-superagent' } as const
+  server.instances = { instances: [instance('', 'acme/widgets'), instance('tools', 'acme/tools')], adding }
+  localStorage.setItem('dsh-superagent/instance', 'tools')
+  await mount()
+  expect(options()).toEqual(['acme/widgets', 'acme/tools · tools', zh.instanceAddOption])
+  await type(selector()!, '+')
+  // Nothing is selected: the panel stays on the instance it showed, now at its Deployment settings.
+  expect(selector()!.value).toBe('tools')
+  expect(localStorage.getItem('dsh-superagent/instance')).toBe('tools')
+  expect(document.querySelector('.dt-settings-title')?.textContent).toBe(zh['settingsGroup.deployment'])
+  expect(text()).toContain(zh.instanceKey)
+  // The same from the default instance; and where adding is not possible the option still leads to the reason.
+  await type(selector()!, '')
+  server.instances = { instances: [instance('', 'acme/widgets'), instance('tools', 'acme/tools')], adding: { available: false,
+    reason: 'no-profile' } }
+  await remount(ko)
+  expect([...selector(ko.instanceLabel)!.options].at(-1)!.textContent).toBe(ko.instanceAddOption)
+  await type(selector(ko.instanceLabel)!, '+')
+  expect(selector(ko.instanceLabel)!.value).toBe('')
+  expect(text()).toContain(ko['instanceAddOff.no-profile'])
+})
+
+it('offers no way to add an instance to a host that does not say it can, and keeps the header of a single instance', async () => {
+  server.instances = { instances: [instance('', 'acme/widgets'), instance('tools')] }
+  await mount()
+  expect(options()).toEqual(['acme/widgets', 'tools'])
+  server.instances = { instances: [instance('', 'acme/widgets')], adding: { available: true, stateDirBase: '/srv/dsh-superagent' } }
+  await remount()
+  expect(selector()).toBeNull()
+  expect(document.querySelector('.dt-head-title')?.children).toHaveLength(1)
 })

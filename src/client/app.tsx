@@ -1,10 +1,10 @@
 /** Root panel shell: instance selection, header with global search and glossary, top-level navigation tabs, and active route view. */
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
-import { managementPrefix, type InstanceView } from '../instance.ts'
+import { managementPrefix, type InstanceAdding, type InstanceView } from '../instance.ts'
 import { useInstances, type SearchView } from './api.ts'
 import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
-import { usePageForm, type DeploymentForm } from './deployment.tsx'
+import { InstancesContext, usePageForm, type DeploymentForm } from './deployment.tsx'
 import { EvalStatus } from './eval.tsx'
 import { ExecutionStatus } from './execution.tsx'
 import { ticketMark } from './marks.ts'
@@ -30,6 +30,8 @@ export interface AppProps {
   prefix?: string
   /** The instance selector for the header, when there is an instance to choose. */
   switcher?: ReactNode
+  /** A message to show once as the panel opens, such as the confirmation of the instance it was opened for. */
+  notice?: string
 }
 
 function Glossary({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -180,7 +182,7 @@ function Pages({ route, openTab, deploymentForm, switcher }: { route: Route; ope
 }
 
 /** Root panel component managing route history and shared panel state. */
-export function App({ t, openSession, deploymentForm, instance = '', prefix, switcher }: AppProps) {
+export function App({ t, openSession, deploymentForm, instance = '', prefix, switcher, notice }: AppProps) {
   const [location, setLocation] = useState(() => initialLocation(instance))
   useEffect(() => { remember(location, instance) }, [location, instance])
   // Preserve the last opened settings group across navigation so the Settings tab reopens at it.
@@ -193,7 +195,7 @@ export function App({ t, openSession, deploymentForm, instance = '', prefix, swi
   const openTab = useCallback((tab: Tab) => move(current => ({ stack: [], route: tab === 'settings'
     ? settingsRoute(lastSettingsGroup(current)) : { page: tab, id: undefined } })), [move])
   return <PanelProvider t={t} openSession={openSession} navigate={navigate} back={back} backLabel={routeLabel(t, location.stack.at(-1) ?? HOME)}
-    prefix={prefix}>
+    prefix={prefix} notice={notice}>
     <Pages route={location.route} openTab={openTab} deploymentForm={deploymentForm} switcher={switcher} />
   </PanelProvider>
 }
@@ -205,16 +207,23 @@ type Known = Omit<InstanceView, 'entry'> & { entry: string | undefined }
 const instanceName = (t: T, { instance, repository }: Known) =>
   repository ? instance ? `${repository} · ${instance}` : repository : instance || t('instanceDefault')
 
-/** Header selector over the listed instances; a selected instance missing from the list, as while it restarts, stays and is marked. */
-function InstanceSelect({ t, instances, selected, select }: { t: T; instances: InstanceView[]; selected: Known
-  select: (instance: string) => void }) {
+/** Value of the selector's last option, which leads to adding an instance; no instance key can equal it. */
+const ADD_OPTION = '+'
+/**
+ * Header selector over the listed instances; a selected instance missing from the list, as while it restarts, stays and is marked.
+ * With `adding` it ends in "Add instance…", which opens the Deployment settings of the instance shown without selecting another.
+ */
+function InstanceSelect({ t, instances, selected, select, adding }: { t: T; instances: InstanceView[]; selected: Known
+  select: (instance: string) => void; adding: InstanceAdding | undefined }) {
+  const { navigate } = usePanel()
   const listed = instances.some(view => view.instance === selected.instance)
   const options: Known[] = listed ? instances : [...instances, selected].sort((a, b) => a.instance < b.instance ? -1 : 1)
   const label = (view: Known) => listed || view.instance !== selected.instance ? instanceName(t, view)
     : t('instanceUnavailable', { name: instanceName(t, view) })
   return <select className="dt-select dt-instance-select" aria-label={t('instanceLabel')} title={label(selected)} value={selected.instance}
-    onChange={event => select(event.target.value)}>
+    onChange={event => event.target.value === ADD_OPTION ? navigate(settingsRoute('deployment')) : select(event.target.value)}>
     {options.map(view => <option key={view.instance} value={view.instance}>{label(view)}</option>)}
+    {adding && <option value={ADD_OPTION}>{t('instanceAddOption')}</option>}
   </select>
 }
 
@@ -226,8 +235,10 @@ export function InstancePanel({ t, openSession, formOf }: Pick<AppProps, 't' | '
   /** The DSH configuration form of a plugin entry, `configForms.get(entry)`. */
   formOf: (entry: string) => ConfigForm<Record<string, unknown>> | undefined
 }) {
-  const { instances, failed } = useInstances()
+  const { instances, adding, failed, reload } = useInstances()
   const [stored, setStored] = useState(storedInstance)
+  // Confirmation of an instance just added, shown by its panel as it opens; any other switch drops it.
+  const [notice, setNotice] = useState<string>()
   // The last listed view of each instance, so one absent from the list while it restarts keeps its name and its form.
   const seen = useRef(new Map<string, InstanceView>())
   for (const view of instances ?? []) seen.current.set(view.instance, view)
@@ -235,8 +246,16 @@ export function InstancePanel({ t, openSession, formOf }: Pick<AppProps, 't' | '
   const selected: Known = instances?.find(view => view.instance === instance) ?? seen.current.get(instance)
     ?? { instance, prefix: managementPrefix(instance), entry: instance ? undefined : DEFAULT_ENTRY }
   const deploymentForm = usePageForm(selected.entry === undefined ? undefined : formOf(selected.entry))
-  const select = useCallback((next: string) => { storeInstance(next); setStored(next) }, [])
+  const select = useCallback((next: string) => { storeInstance(next); setNotice(undefined); setStored(next) }, [])
+  // An instance just added is shown under the view the host returned, as the list may not carry it yet.
+  const switchTo = useCallback((view: InstanceView, message: string) => {
+    seen.current.set(view.instance, view); storeInstance(view.instance); setNotice(message); setStored(view.instance)
+  }, [])
+  const control = useMemo(() => ({ instances, adding, reload, switchTo }), [instances, adding, reload, switchTo])
   const choose = instances && (instances.length > 1 || !instances.some(view => view.instance === instance))
-  return <App key={instance} t={t} openSession={openSession} deploymentForm={deploymentForm} instance={instance} prefix={selected.prefix}
-    switcher={choose ? <InstanceSelect t={t} instances={instances} selected={selected} select={select} /> : undefined} />
+  return <InstancesContext.Provider value={control}>
+    <App key={instance} t={t} openSession={openSession} deploymentForm={deploymentForm} instance={instance} prefix={selected.prefix}
+      {...notice ? { notice } : {}}
+      switcher={choose ? <InstanceSelect t={t} instances={instances} selected={selected} select={select} adding={adding} /> : undefined} />
+  </InstancesContext.Provider>
 }

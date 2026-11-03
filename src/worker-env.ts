@@ -9,7 +9,7 @@
  * directory of the instance whose Session (or whose Session's subagent) runs it, and the dispatchers run that instance's
  * shims. Like the shims, this is a guardrail for the default path, not isolation: a worker can set the variable itself.
  * The registry also knows which instances run, so this entry serves `GET /orchestrator/api/instances` for the panel's instance
- * selector, whichever instances run, the default one included or not.
+ * selector, whichever instances run, the default one included or not, and `POST` there to add one to the profile (src/infra/profile.ts).
  */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -19,8 +19,9 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { lockSync } from 'proper-lockfile'
-import { INSTANCES_PATH, managementPrefix, type InstanceView, type InstancesView } from './instance.ts'
+import { INSTANCES_PATH, managementPrefix, type AddInstanceResult, type InstanceView, type InstancesView } from './instance.ts'
 import { sameOrigin } from './infra/origin.ts'
+import { AddInstanceFailure, InstanceAdder, readRequest, type Hmr, type LoaderEntry, type ProfileContext } from './infra/profile.ts'
 import { WORKER_AMBIGUOUS, WORKER_BIN_VARIABLE, WORKER_UNCONFIGURED, neutralVariables, sharedWorkers, withoutDirectory, workerBin, writeDispatchers,
   writeSharedGitConfig, type SharedWorkers } from './infra/environment.ts'
 
@@ -148,6 +149,11 @@ export class WorkerRegistry implements Workers {
       return { instance: member.instance, prefix: managementPrefix(member.instance), entry: member.entry, ...repository ? { repository } : {} }
     }).sort((a, b) => a.instance === b.instance ? 0 : !a.instance ? -1 : !b.instance ? 1 : a.instance < b.instance ? -1 : 1)
   }
+  /** The `stateDir` of a joined instance; the default one's for an empty key. */
+  stateDirOf(instance: string): string | undefined {
+    for (const { member } of this.entries) if (member.instance === instance) return member.stateDir
+    return undefined
+  }
   /** Stops taking registrations; the process environment is restored once the last instance released its own, at once if none is left. */
   stop(): Promise<void> {
     this.stopping = true
@@ -230,7 +236,6 @@ function answer(res: ServerResponse, status: number, value: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
   res.end(JSON.stringify(value))
 }
-interface ProfileContext { dir?: string }
 
 /**
  * Provides `superagentWorkers`: a registry whose shared directory is `<profile>/.dsh-superagent-workers`, or a temporary one
@@ -245,6 +250,14 @@ export async function apply(ctx: Context): Promise<void> {
   // Stopping restores the process environment only once the instances, which stop with the service, released their registrations.
   ctx.effect(() => () => registry.stop(), 'dsh-superagent: worker environment')
   ctx.provide('superagentWorkers', registry)
+  const adder = new InstanceAdder({
+    profile: () => ctx.get('profileContext') as ProfileContext | undefined,
+    hmr: () => ctx.get('hmr') as Hmr | undefined,
+    loader: () => ctx.get('loader') as { entries(): Iterable<LoaderEntry> } | undefined,
+    instances: () => registry.instances(),
+    defaultStateDir: () => registry.stateDirOf(''),
+    logger: ctx.logger,
+  })
   // DSH's shellEnv ties the registration to the fiber of the context it is reached through, here this plugin's.
   ctx.inject(['shellEnv'], child => {
     const { shellEnv } = child as unknown as { shellEnv: ShellEnv }
@@ -264,8 +277,13 @@ export async function apply(ctx: Context): Promise<void> {
     if (webServer.host !== '127.0.0.1') { ctx.logger.warn('dsh-superagent does not list its instances on a non-loopback Web server'); return }
     child.effect(() => webServer.register({ kind: 'prefix', path: INSTANCES_PATH, handler: (req, res) => {
       if (!sameOrigin(req, webServer.port)) { answer(res, 403, { error: 'Same-origin management request required' }); return }
-      if (req.method !== 'GET' || new URL(req.url ?? '/', 'http://localhost').pathname !== INSTANCES_PATH) { answer(res, 404, { error: 'Unknown operation' }); return }
-      answer(res, 200, { instances: registry.instances() } satisfies InstancesView)
+      const path = new URL(req.url ?? '/', 'http://localhost').pathname
+      if (path === INSTANCES_PATH && req.method === 'GET') { answer(res, 200, { instances: registry.instances(), adding: adder.adding() } satisfies InstancesView); return }
+      if (path !== INSTANCES_PATH || req.method !== 'POST') { answer(res, 404, { error: 'Unknown operation' }); return }
+      void readRequest(req).then(body => adder.add(body)).then(({ status, result }) => { answer(res, status, result satisfies AddInstanceResult) }, (error: unknown) => {
+        if (error instanceof AddInstanceFailure) answer(res, error.status, { error: error.message, code: error.code })
+        else answer(res, 500, { error: error instanceof Error ? error.message : String(error), code: 'failed' })
+      })
     } }), 'dsh-superagent: instance list route')
   })
 }

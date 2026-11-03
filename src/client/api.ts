@@ -5,7 +5,8 @@ import { SUBSCRIPTION_ERRORS, type SubscriptionError } from '../app/subscription
 import { USER_ERRORS, type UserErrorCode } from '../core/errors.ts'
 import type { TicketStage } from '../core/stage.ts'
 import type { SetupProblem } from '../setup.ts'
-import { DEFAULT_PREFIX, INSTANCES_PATH, type InstanceView, type InstancesView } from '../instance.ts'
+import { DEFAULT_PREFIX, INSTANCES_PATH, type AddInstanceError, type AddInstanceRequest, type AddInstanceResult, type InstanceAdding,
+  type InstanceView, type InstancesView } from '../instance.ts'
 
 /** Host rejection identified by a structured user error code and interpolation values. */
 export interface UserFailure { code: UserErrorCode; values: Record<string, string> }
@@ -104,22 +105,71 @@ export function usePoll<T>(load: () => Promise<T>, deps: readonly unknown[], int
   return { data: state.data, error: state.error, reload }
 }
 
+const ADDING_REASONS: readonly Extract<InstanceAdding, { available: false }>['reason'][] = ['no-profile', 'no-reload', 'no-default']
+const ADD_ERRORS: readonly AddInstanceError[] = ['invalid', 'exists', 'unavailable', 'failed']
+/** Read only what this panel understands of the instance list's `adding`; an absent or unknown value means no way to add. */
+function addingOf(value: unknown): InstanceAdding | undefined {
+  const { available, stateDirBase, reason } = (value ?? {}) as Record<string, unknown>
+  if (available === true && typeof stateDirBase === 'string' && stateDirBase) return { available, stateDirBase }
+  const known = ADDING_REASONS.find(item => item === reason)
+  return available === false && known ? { available, reason: known } : undefined
+}
 /** Read the host's list of running instances; any failure, such as the 404 of a host without the route, rejects. */
-async function listInstances(): Promise<InstanceView[]> {
+async function listInstances(): Promise<InstancesView> {
   const response = await fetch(INSTANCES_PATH, { headers: { 'x-orchestrator-request': '1' } })
   const text = await response.text()
   if (!response.ok) throw new Error(`${INSTANCES_PATH} answered ${response.status}`)
-  const { instances } = JSON.parse(text) as Partial<InstancesView>
+  const { instances, adding } = JSON.parse(text) as Partial<InstancesView>
   if (!Array.isArray(instances)) throw new Error(`${INSTANCES_PATH} answered without instances`)
-  return instances.filter(item => typeof item?.instance === 'string' && typeof item.prefix === 'string' && typeof item.entry === 'string')
+  const listed = instances.filter(item => typeof item?.instance === 'string' && typeof item.prefix === 'string' && typeof item.entry === 'string')
+  const addable = addingOf(adding)
+  return { instances: listed, ...addable ? { adding: addable } : {} }
+}
+/** The instance list as the panel uses it: what runs, whether and how one can be added, and an immediate re-read of both. */
+export interface InstancesData {
+  /** `undefined` until the list first arrives, and for good when the host never serves it (`failed`). */
+  instances: InstanceView[] | undefined
+  /** Absent when the host does not say whether it can add an instance. */
+  adding: InstanceAdding | undefined
+  failed: boolean
+  /** Read the list now, such as after adding an instance; resolves once the read ended. */
+  reload: () => Promise<void>
 }
 /**
  * Poll the instances running in this process. `undefined` until the list first arrives, and for good when the host never serves it
  * (`failed`); a later failed poll keeps the last list.
  */
-export function useInstances(intervalMs = 15_000): { instances: InstanceView[] | undefined; failed: boolean } {
-  const { data, error } = usePoll(listInstances, [], intervalMs)
-  return { instances: data, failed: !data && !!error }
+export function useInstances(intervalMs = 15_000): InstancesData {
+  const { data, error, reload } = usePoll(listInstances, [], intervalMs)
+  return { instances: data?.instances, adding: data?.adding, failed: !data && !!error, reload }
+}
+
+/**
+ * A refused or failed `addInstance`. `code` is the host's `AddInstanceError`; it is absent when the host did not answer (`status` 0)
+ * or answered something else, such as the empty 404 of routes that are unmounted during a restart. `message` is the host's `error` text.
+ */
+export class AddInstanceFailure extends Error {
+  constructor(message: string, readonly status: number, readonly code?: AddInstanceError) { super(message) }
+}
+/**
+ * Ask the host to add the instance `key` (`POST INSTANCES_PATH`). Resolves with the host's answer, which says whether the instance
+ * already runs (`applied`) or waits for a Harness restart; rejects with an `AddInstanceFailure`.
+ */
+export async function addInstance(key: string): Promise<AddInstanceResult> {
+  const body: AddInstanceRequest = { instance: key }
+  let response: Response
+  try {
+    response = await fetch(INSTANCES_PATH, { method: 'POST', headers: { 'x-orchestrator-request': '1', 'content-type': 'application/json' },
+      body: JSON.stringify(body) })
+  } catch { throw new AddInstanceFailure('', 0) }
+  const text = await response.text()
+  let value: Record<string, unknown> = {}
+  try { value = text ? JSON.parse(text) as Record<string, unknown> : {} } catch { /* A body that is not JSON carries no code. */ }
+  if (!response.ok) {
+    const code = ADD_ERRORS.find(known => known === value.code)
+    throw new AddInstanceFailure(typeof value.error === 'string' ? value.error : '', response.status, code)
+  }
+  return value as unknown as AddInstanceResult
 }
 
 export const DECISION_FILTERS = ['work', 'stop', 'ignore', 'unavailable', 'all'] as const
