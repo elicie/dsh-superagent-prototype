@@ -70,7 +70,7 @@ export interface ExecutorHost {
   readonly machine: Pick<Machine, 'stateDir'>
   readonly lifetime: AbortSignal
   /** Session manager for worker sessions and for relaying worker reports to the main Session. */
-  readonly sessions: Pick<Sessions, 'ensure' | 'prompt' | 'promptedId' | 'relay' | 'holds'>
+  readonly sessions: Pick<Sessions, 'ensure' | 'place' | 'prompt' | 'promptedId' | 'relay' | 'holds'>
   closing(): boolean
   /** Whether processing is paused, which holds launches and input deliveries. */
   paused(): boolean
@@ -312,10 +312,10 @@ export class DshExecutor implements Executor {
         }
         const input = ticket.inputs.find(item => item.id === inputId)
         try {
-          // Recreate the worker session if it was externally deleted.
-          if (!this.host.context.agents.get(sessionId as SessionId)) {
-            await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker')
-          }
+          // Recreate the worker session if it was externally deleted; a live one is kept working in its Ticket directory.
+          const live = this.host.context.agents.get(sessionId as SessionId)
+          if (!live) await this.host.sessions.ensure(sessionId, ticket.execution?.directory ?? '', ticket.title, 'worker')
+          else await this.host.sessions.place(live, ticket.execution?.directory ?? '')
           if (input) await this.deliverInput(ticket, assignment, input)
         } catch (error) {
           if (this.host.closing() || error instanceof Later) throw error

@@ -5,7 +5,7 @@ import type { MessageId } from '@deepseek-ai/dsh-llm'
 import { scopeParentOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { realpath } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { dirname, isAbsolute, relative } from 'node:path'
 import { z } from 'zod'
 import { key, liveTicket, type Ticket } from '../core/index.ts'
 import { mandateInstructions, ticketOfSession } from '../executor/dsh.ts'
@@ -46,6 +46,21 @@ export interface SessionsHost {
  * its skills are registered in, and the skills of one prompt revision; for a worker's subagent, only its tool limits.
  */
 interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: { revision: number; dispose: () => void }; subagent?: true }
+
+/**
+ * DSH's `workingDirectory` service (`@deepseek-ai/dsh-working-directory`, in DeepSeek Harness 0.2.1's base bundle): a Session's
+ * effective directory, which its tools run in, apart from the directory it was created in. The DSH types this bundle builds
+ * against predate it.
+ */
+interface WorkingDirectories {
+  get(session: Agent['session']): string
+  set(agent: Agent, path: string, signal?: AbortSignal): Promise<string>
+}
+/** Whether `path` is `directory` or inside it; both canonical. */
+const within = (path: string, directory: string) => {
+  const rest = relative(directory, path)
+  return rest === '' || (!rest.startsWith('..') && !isAbsolute(rest))
+}
 
 /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
 export const WORKER_PRESET = 'dsh-superagent-worker', ROUTER_PRESET = 'dsh-superagent-router'
@@ -139,21 +154,28 @@ export class Sessions {
   }
   /**
    * Resolves or creates session `id` working in `cwd`, initializes its role model, decorates it with prompts/skills/tools, sets `danger-full-access` permissions, and renames it to `title`.
-   * The main Session gets a DSH workspace for `cwd`; a worker Session is created with only its `cwd`, so DSH lists it as Ungrouped instead of registering a workspace for every Ticket directory.
+   * The main Session gets a DSH workspace for `cwd`. A new worker Session joins that same workspace, the instance's, and works in
+   * `cwd`, its Ticket directory, as its DSH working directory (`place`): DSH lists a workspace's Sessions only when they were
+   * created in its own directory. Without DSH's working directories or the main Session's workspace, a worker Session is created
+   * in `cwd` itself and DSH lists it as Ungrouped, as every worker Session created before this was.
    */
   async ensure(id: string, cwd: string, title: string, role: 'orchestrator' | 'worker'): Promise<Agent> {
     const ctx = this.ctx
     let result = await ctx.sessionController.resolveAgent(id as SessionId)
     if ('error' in result && result.error.code === 'session/not-found') {
       // A Session keeps the preset it was created with, one of the bundle's own (cordis.patch.yml).
-      if (role === 'worker') await ctx.sessionController.create({ sessionId: id as SessionId, cwd, agentPreset: WORKER_PRESET })
-      else {
+      if (role === 'worker') {
+        const workspace = this.directories() && this.instanceWorkspace()
+        await ctx.sessionController.create(workspace ? { sessionId: id as SessionId, workspaceId: workspace, agentPreset: WORKER_PRESET }
+          : { sessionId: id as SessionId, cwd, agentPreset: WORKER_PRESET })
+      } else {
         const workspace = await ctx.workspaceRegistry.create(cwd)
         await ctx.sessionController.create({ sessionId: id as SessionId, workspaceId: workspace.id, agentPreset: ROUTER_PRESET })
       }
       result = await ctx.sessionController.resolveAgent(id as SessionId)
     }
     if ('error' in result) throw result.error
+    if (role === 'worker') await this.place(result.agent, cwd)
     const settings = this.host.store.settings()
     await initializeRoleModel(ctx, result.agent, role === 'orchestrator' ? settings.eval.model : settings.executor.model)
     await this.decorate(result.agent)
@@ -184,6 +206,26 @@ export class Sessions {
     } catch (error) {
       ctx.logger.warn('dsh-superagent could not remove the workspace registrations of its Ticket directories: %s', String(error))
     }
+  }
+  /**
+   * Keep a worker Session working in its Ticket directory `cwd`, or below it, as its DSH working directory: right after it is
+   * created in the instance's workspace, and again whenever it was elsewhere, as when DSH moved it back to the directory it was
+   * created in after the Ticket directory disappeared. Throws when the Ticket directory is missing, so a worker never runs in
+   * the instance's state directory. A Session created in `cwd` itself is already there.
+   */
+  async place(agent: Agent, cwd: string): Promise<void> {
+    const directories = this.directories()
+    if (!directories || !cwd) return
+    const target = await realpath(cwd).catch(() => undefined)
+    if (!target) throw new Error(`The Ticket directory ${cwd} does not exist`)
+    const current = await realpath(directories.get(agent.session)).catch(() => undefined)
+    if (current !== undefined && within(current, target)) return
+    await directories.set(agent, target, this.host.lifetime)
+  }
+  private directories(): WorkingDirectories | undefined { return this.ctx.get('workingDirectory') as WorkingDirectories | undefined }
+  /** The DSH workspace that holds the main Session, which the instance's worker Sessions join. */
+  private instanceWorkspace() {
+    return this.ctx.workspaceRegistry.list().find(workspace => workspace.sessionIds.includes(this.host.masterId as SessionId))?.id
   }
   /** True for the worker Session (`worker-<ticketId>`) of a Ticket in this instance's store. */
   ownsWorker(sessionId: string): boolean {

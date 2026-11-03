@@ -12,17 +12,20 @@ let directory: string, root: string
 let created: Record<string, unknown>[], registered: string[], deleted: string[], warn: ReturnType<typeof vi.fn>
 let known: Set<string>, existing: Set<string>, workspaces: { id: string; path: string; sessionIds: string[] }[]
 let failDelete: Set<string>, listFails: boolean
+/** DSH's working directory of the one fake agent, and the directories it was moved to. */
+let location: string | undefined, moves: string[]
 
 beforeEach(() => {
   directory = realpathSync(mkdtempSync(join(tmpdir(), 'dsh-superagent-workspaces-')))
   root = join(directory, 'work'); mkdirSync(root)
   created = []; registered = []; deleted = []; warn = vi.fn()
   known = new Set(['t1', 't2']); existing = new Set(); workspaces = []; failDelete = new Set(); listFails = false
+  location = undefined; moves = []
 })
 afterEach(() => { rmSync(directory, { recursive: true, force: true }) })
 
 const agent = { session: {} }
-function make(executionRoot: () => string = () => root) {
+function make(executionRoot: () => string = () => root, { directories = false } = {}) {
   const ctx = new Context()
   const services = {
     sessionController: {
@@ -36,6 +39,10 @@ function make(executionRoot: () => string = () => root) {
       delete: async (id: string) => { if (failDelete.has(id)) throw new Error('write failed'); deleted.push(id); return true },
     },
     permissionPresets: { set: () => {} },
+    ...directories ? { workingDirectory: {
+      get: () => location ?? '/nonexistent',
+      set: async (_agent: unknown, path: string) => { moves.push(path); location = path; return path },
+    } } : {},
   }
   for (const [name, service] of Object.entries(services)) ctx.reflect.provide(name, service)
   ctx.logger.warn = warn as never
@@ -57,6 +64,27 @@ const workspace = (path: string, sessionIds: string[] = []) => {
 const child = (name: string) => { const path = join(root, name); mkdirSync(path, { recursive: true }); return path }
 
 describe('creating Sessions', () => {
+  it('creates a worker Session in the main Session\'s workspace and moves it to its Ticket directory', async () => {
+    workspace(directory, [MASTER])
+    const ticket = child('fix-regression')
+    // DSH starts a Session created in a workspace in the workspace's directory.
+    location = directory
+    await make(undefined, { directories: true }).ensure('worker-t1', ticket, 'Ticket', 'worker')
+    expect(created).toEqual([{ sessionId: 'worker-t1', workspaceId: `ws:${directory}`, agentPreset: WORKER_PRESET }])
+    expect(created[0]).not.toHaveProperty('cwd')
+    expect(registered).toEqual([])
+    expect(moves).toEqual([ticket])
+  })
+  it('creates a worker Session in its directory when there is no workspace of the main Session or no working directory to move', async () => {
+    const ticket = child('fix-regression')
+    location = ticket
+    await make(undefined, { directories: true }).ensure('worker-t1', ticket, 'Ticket', 'worker')
+    workspace(directory, [MASTER])
+    await make().ensure('worker-t2', ticket, 'Ticket', 'worker')
+    expect(created).toEqual([{ sessionId: 'worker-t1', cwd: ticket, agentPreset: WORKER_PRESET },
+      { sessionId: 'worker-t2', cwd: ticket, agentPreset: WORKER_PRESET }])
+    expect(moves).toEqual([])
+  })
   it('creates a worker Session with its directory and no workspace', async () => {
     await make().ensure('worker-t1', '/tmp/ticket', 'Ticket', 'worker')
     expect(created).toEqual([{ sessionId: 'worker-t1', cwd: '/tmp/ticket', agentPreset: WORKER_PRESET }])
@@ -140,5 +168,35 @@ describe('releasing the workspace registrations of Ticket directories', () => {
     await expect(make().releaseWorkspaces()).resolves.toBeUndefined()
     expect(warn).toHaveBeenCalledOnce()
     expect(String(warn.mock.calls[0]!.join(' '))).toContain('registry unavailable')
+  })
+})
+
+describe('keeping a worker Session in its Ticket directory', () => {
+  it('leaves one working in its Ticket directory or below it, also through a symbolic link, and moves one elsewhere back', async () => {
+    const ticket = child('fix-regression'), below = child('fix-regression/packages/app')
+    const link = join(directory, 'linked'); symlinkSync(ticket, link)
+    const sessions = make(undefined, { directories: true })
+    for (const where of [ticket, below]) {
+      location = where
+      await sessions.place(agent as never, link)
+    }
+    expect(moves).toEqual([])
+    // DSH moved it back to the directory it was created in, the instance's state directory, or it is somewhere else.
+    for (const where of [directory, root, child('other-ticket')]) {
+      location = where
+      await sessions.place(agent as never, ticket)
+    }
+    expect(moves).toEqual([ticket, ticket, ticket])
+  })
+  it('refuses a Ticket directory that does not exist instead of leaving the worker where it is', async () => {
+    location = directory
+    await expect(make(undefined, { directories: true }).place(agent as never, join(root, 'gone'))).rejects.toThrow(/does not exist/)
+    expect(moves).toEqual([])
+  })
+  it('does nothing without DSH\'s working directories or a Ticket directory', async () => {
+    location = directory
+    await make().place(agent as never, join(root, 'gone'))
+    await make(undefined, { directories: true }).place(agent as never, '')
+    expect(moves).toEqual([])
   })
 })
