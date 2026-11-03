@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { Sessions, ROUTER_PRESET, WORKER_PRESET, type SessionsHost } from '../src/app/sessions.ts'
+import { Sessions, ROUTER_PRESET, WORKER_PRESET, misplaced, type SessionsHost, type WorkingDirectories } from '../src/app/sessions.ts'
 
 vi.mock('../src/app/role-models.ts', () => ({ initializeRoleModel: async () => {} }))
 
@@ -198,5 +198,31 @@ describe('keeping a worker Session in its Ticket directory', () => {
     await make().place(agent as never, join(root, 'gone'))
     await make(undefined, { directories: true }).place(agent as never, '')
     expect(moves).toEqual([])
+  })
+})
+
+describe('refusing tools outside the Ticket directory', () => {
+  const at = (path: string | undefined) => ({ get: () => path ?? '/nonexistent', set: async () => '' }) as unknown as WorkingDirectories
+  const session = (cwd?: string) => ({ header: cwd === undefined ? {} : { cwd } }) as never
+  it('allows a Session working in its Ticket directory, below it, or elsewhere on purpose', () => {
+    const ticket = child('fix-regression'), below = child('fix-regression/packages/app'), other = child('elsewhere')
+    for (const where of [ticket, below, other]) expect(misplaced(at(where), session(directory), ticket)).toBeUndefined()
+    // A Session created in its Ticket directory falls back into it, so only a missing Ticket directory matters to it.
+    expect(misplaced(at(join(ticket, 'gone')), session(ticket), ticket)).toBeUndefined()
+    // Without DSH's working directories, or without a Ticket directory, nothing more is checked.
+    expect(misplaced(undefined, session(directory), ticket)).toBeUndefined()
+    expect(misplaced(at(directory), session(directory), undefined)).toBeUndefined()
+  })
+  it('refuses when the Ticket directory is gone', () => {
+    const gone = join(root, 'gone')
+    for (const directories of [at(gone), undefined]) {
+      expect(misplaced(directories, session(directory), gone)).toMatch(/^The Ticket directory .*gone no longer exists/)
+    }
+  })
+  it('refuses when DSH moved the working directory back to the state directory, or would because it is gone', () => {
+    const ticket = child('fix-regression')
+    expect(misplaced(at(directory), session(directory), ticket)).toMatch(/working directory is .* where DSH moved it/)
+    expect(misplaced(at(join(ticket, 'removed')), session(directory), ticket))
+      .toBe(`This Session's working directory ${join(ticket, 'removed')} no longer exists, so DSH would run tools in ${directory}, outside the Ticket directory ${ticket}. Tools are refused; end the turn.`)
   })
 })

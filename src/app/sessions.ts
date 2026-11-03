@@ -4,6 +4,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { MessageId } from '@deepseek-ai/dsh-llm'
 import { scopeParentOf } from '@deepseek-ai/dsh-scope'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import { realpathSync, statSync } from 'node:fs'
 import { realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, relative } from 'node:path'
 import { z } from 'zod'
@@ -52,7 +53,7 @@ interface SessionBinding { disposers: (() => void)[]; scope?: Context; skills?: 
  * effective directory, which its tools run in, apart from the directory it was created in. The DSH types this bundle builds
  * against predate it.
  */
-interface WorkingDirectories {
+export interface WorkingDirectories {
   get(session: Agent['session']): string
   set(agent: Agent, path: string, signal?: AbortSignal): Promise<string>
 }
@@ -60,6 +61,31 @@ interface WorkingDirectories {
 const within = (path: string, directory: string) => {
   const rest = relative(directory, path)
   return rest === '' || (!rest.startsWith('..') && !isAbsolute(rest))
+}
+
+const canonical = (path: string | undefined) => { try { return path === undefined ? undefined : realpathSync(path) } catch { return undefined } }
+/**
+ * Why a worker's or its subagent's `session` may not run a tool now, or `undefined`. A tool would run outside the Ticket
+ * `directory` when that directory is gone, or when the Session's DSH working directory is gone or was already moved back to the
+ * directory the Session was created in, which DSH does when a working directory disappears; for a worker created in the
+ * instance's workspace that is the instance's state directory. A worker's next start or message moves it back (`Sessions.place`).
+ * Synchronous, as DSH's tool guards are. Without DSH's working directories, or for a Session created inside the Ticket
+ * directory, only a missing Ticket directory refuses.
+ */
+export function misplaced(directories: WorkingDirectories | undefined, session: Agent['session'], directory: string | undefined): string | undefined {
+  if (!directory) return undefined
+  const ticket = canonical(directory)
+  if (!ticket || !statSync(ticket, { throwIfNoEntry: false })?.isDirectory()) {
+    return `The Ticket directory ${directory} no longer exists. Tools are refused so that nothing runs in another directory; end the turn and report it.`
+  }
+  if (!directories) return undefined
+  const created = canonical(session.header.cwd)
+  if (created !== undefined && within(created, ticket)) return undefined
+  const current = directories.get(session), working = canonical(current)
+  if (working !== undefined && working !== created) return undefined
+  return working === undefined
+    ? `This Session's working directory ${current} no longer exists, so DSH would run tools in ${created ?? 'another directory'}, outside the Ticket directory ${directory}. Tools are refused; end the turn.`
+    : `This Session's working directory is ${working}, outside the Ticket directory ${directory}, where DSH moved it after its directory disappeared. Tools are refused until it is back in the Ticket directory; end the turn.`
 }
 
 /** The agent presets Executor Sessions and the main Session are created with, which the bundle's patch defines. */
@@ -361,17 +387,19 @@ export class Sessions {
   }
   /**
    * An Executor Session's tools: only the profile's work tools, which DSH requires to be known, and none once its ticket
-   * ended. A failed or blocked worker keeps its tools, so a person may continue it in its Session; only automated input waits
-   * (see the executor). Read inherited tools through the parent scope, which includes the preset's tools. The global view
-   * misses preset tools; the agent's own view also includes local tools such as subagent, which restrict refuses to name.
+   * ended, or while it would not run in its Ticket directory (`misplaced`). A failed or blocked worker keeps its tools, so a
+   * person may continue it in its Session; only automated input waits (see the executor). Read inherited tools through the
+   * parent scope, which includes the preset's tools. The global view misses preset tools; the agent's own view also includes
+   * local tools such as subagent, which restrict refuses to name.
    */
   private workOnly(agent: Agent, ticketId: string): (() => void)[] {
     const store = this.host.store
     const parent = scopeParentOf(agent)
     const allow = WORK_TOOLS.filter(name => agent.ctx.tools.get(name, parent))
-    return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard(() => {
+    return [agent.ctx.tools.restrict({ allow }), agent.ctx.tools.guard((execution?: { agent?: Agent }) => {
       const current = store.tickets.get(ticketId)
-      return !current || !liveTicket(current) ? 'Ticket ended; new work needs a new authorized ticket' : undefined
+      if (!current || !liveTicket(current)) return 'Ticket ended; new work needs a new authorized ticket'
+      return misplaced(this.directories(), (execution?.agent ?? agent).session, current.execution?.directory)
     })]
   }
   /**

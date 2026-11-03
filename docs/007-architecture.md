@@ -234,7 +234,7 @@ Validation inherits an omitted base from the saved override, drops removed parts
 
 ### Sessions
 
-`Sessions` (`src/app/sessions.ts`) manages DeepSeek Harness Sessions for both roles. `ensure` creates a Session with its role's model: the main Session in a workspace of the state directory, and a worker in that same workspace, then moved to its Ticket directory as its DSH working directory (`place`, which also runs when a live worker takes a new message and refuses a missing Ticket directory); without DSH's `workingDirectory` service or the main Session's workspace, a worker gets only its Ticket directory as `cwd`, in no workspace. `releaseWorkspaces` runs at startup after the main Session is ensured and deletes, best effort, the earlier workspace registrations of Ticket directories (see [003 Execution](003-execution.md)). `install` follows agent events and registers prompts, skills and tools for managed Sessions.
+`Sessions` (`src/app/sessions.ts`) manages DeepSeek Harness Sessions for both roles. `ensure` creates a Session with its role's model: the main Session in a workspace of the state directory, and a worker in that same workspace, then moved to its Ticket directory as its DSH working directory (`place`, which also runs when a live worker takes a new message and refuses a missing Ticket directory; between those, `misplaced` refuses a worker's and its subagents' tools while they would run outside the Ticket directory); without DSH's `workingDirectory` service or the main Session's workspace, a worker gets only its Ticket directory as `cwd`, in no workspace. `releaseWorkspaces` runs at startup after the main Session is ensured and deletes, best effort, the earlier workspace registrations of Ticket directories (see [003 Execution](003-execution.md)). `install` follows agent events and registers prompts, skills and tools for managed Sessions.
 
 `prompt` delivers once per request id. `relay` and `notify` enqueue main-Session messages handled by the `relay` and `notice` effects. `src/app/notices.ts` defines their content; `delivery` checks whether a message arrived.
 
@@ -443,7 +443,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/delivery.spec.ts` | `AgentDelivery` |
 | `tests/retry-health.spec.ts`, `tests/role-models.spec.ts` | Model budget retries, and the models of the two roles |
 | `tests/runtime.spec.ts` | The whole application on a simulated DeepSeek Harness host, through tools and HTTP |
-| `tests/session-workspaces.spec.ts` | How Sessions are created (main Session in a workspace, worker in the same one and moved to its Ticket directory, or in its directory without one), keeping a worker in its Ticket directory, and which earlier workspace registrations start removes |
+| `tests/session-workspaces.spec.ts` | How Sessions are created (main Session in a workspace, worker in the same one and moved to its Ticket directory, or in its directory without one), keeping a worker in its Ticket directory, refusing its tools outside it, and which earlier workspace registrations start removes |
 | `tests/tools.spec.ts` | The Sessions' tools: what `orchestrator_read` reads for each role, and the shapes and checks of the other main Session tools |
 | `tests/runtime-concurrency.spec.ts` | Work that overlaps: Triggers during a pass, Tickets that change during deliveries and launches |
 | `tests/http.spec.ts` | The same-origin and loopback checks, the status of each kind of failure, the body limit, path parameters and queries |
