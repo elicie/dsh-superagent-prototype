@@ -192,19 +192,20 @@ it('keeps a selected instance that was never listed, says it is not answering, a
   expect(prefixes()).toEqual(['/orchestrator'])
 })
 
-it('ends the selector in "Add instance…" when the host can add one, and opens the Deployment settings of the instance shown', async () => {
+it('ends the selector in "Add instance…" when the host can add one, which opens a dialog over the instance shown', async () => {
   const adding = { available: true, stateDirBase: '/srv/dsh-superagent' } as const
   server.instances = { instances: [instance('', 'acme/widgets'), instance('tools', 'acme/tools')], adding }
   localStorage.setItem('dsh-superagent/instance', 'tools')
+  at({ page: 'eval' }, 'tools')
   await mount()
   expect(options()).toEqual(['acme/widgets', 'acme/tools · tools', zh.instanceAddOption])
   await type(selector()!, '+')
-  // Nothing is selected: the panel stays on the instance it showed, now at its Deployment settings.
+  // Nothing is selected and the page stays where it was: the dialog opens over it.
   expect(selector()!.value).toBe('tools')
   expect(localStorage.getItem('dsh-superagent/instance')).toBe('tools')
-  expect(document.querySelector('.dt-settings-title')?.textContent).toBe(zh['settingsGroup.deployment'])
-  expect(text()).toContain(zh.instanceKey)
-  // The same from the default instance; and where adding is not possible the option still leads to the reason.
+  expect(page()).toEqual([zh['tab.eval']])
+  expect(document.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe(zh.instanceAdd)
+  // Where adding is not possible the option still leads to the reason.
   await type(selector()!, '')
   server.instances = { instances: [instance('', 'acme/widgets'), instance('tools', 'acme/tools')], adding: { available: false,
     reason: 'no-profile' } }
@@ -212,15 +213,19 @@ it('ends the selector in "Add instance…" when the host can add one, and opens 
   expect([...selector(ko.instanceLabel)!.options].at(-1)!.textContent).toBe(ko.instanceAddOption)
   await type(selector(ko.instanceLabel)!, '+')
   expect(selector(ko.instanceLabel)!.value).toBe('')
-  expect(text()).toContain(ko['instanceAddOff.no-profile'])
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain(ko['instanceAddOff.no-profile'])
 })
 
 it('offers no way to add an instance to a host that does not say it can, and keeps the header of a single instance', async () => {
   server.instances = { instances: [instance('', 'acme/widgets'), instance('tools')] }
   await mount()
   expect(options()).toEqual(['acme/widgets', 'tools'])
-  server.instances = { instances: [instance('', 'acme/widgets')], adding: { available: true, stateDirBase: '/srv/dsh-superagent' } }
+  server.instances = { instances: [instance('', 'acme/widgets')] }
   await remount()
   expect(selector()).toBeNull()
   expect(document.querySelector('.dt-head-title')?.children).toHaveLength(1)
+  // A single instance that can get a second shows the selector, whose only other option adds one.
+  server.instances = { instances: [instance('', 'acme/widgets')], adding: { available: true, stateDirBase: '/srv/dsh-superagent' } }
+  await remount()
+  expect(options()).toEqual(['acme/widgets', zh.instanceAddOption])
 })

@@ -384,7 +384,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/sources/admission-context.ts` | The bounded window an assessment starts from: the first pages of a Trigger's Thread, read through its kind, and the messages around the Trigger |
 | `src/sources/feishu-image.ts` | Reads a Feishu message's image as an attachment for the assessing Session |
 | `src/client/index.tsx` | The client plugin entry: the sidebar entry, the main panel and the page in DeepSeek Harness's Plugin Manager |
-| `src/client/app.tsx` | The panel: the selected instance and its selector, header, search, glossary, tabs and the page of the current route |
+| `src/client/app.tsx` | The panel: the selected instance and its selector, which opens adding an instance, header, search, glossary, tabs and the page of the current route |
 | `src/client/provider.tsx` | What every page reads from its host: copy, calls, navigation, notices, the state poll, and `restart`, which reads the state quickly while dsh-superagent restarts |
 | `src/client/api.ts` | Calls and polls of the management API, typed by `src/app/api.ts`, the instance list and adding an instance, and the Decision filters of the Eval status |
 | `src/client/route.ts` | The tabs, the settings groups, the typed routes that `parseRoute` reads, each instance's route memory with the settings group opened last, and the selected instance |
@@ -395,7 +395,8 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `src/client/settings-kit.tsx` | The building blocks of settings blocks: the settings the stage groups share, `useBlockDraft`, the fields, among them a Source kind's, and the history of saves |
 | `src/client/prompts.tsx` | The Prompts settings: the page owns the view it read and its editor the draft, and the Edit, Full prompt and History tabs render from them; a built-in part's editor shows a changed default and keeps or drops the override |
 | `src/client/prompt-config.ts` | The prompt configuration by section, by the team sections, skill names, built-in parts (`part/<key>`, with `withOverride`) and part headings the prompt views give, and the line diff of the full prompt, as pure functions |
-| `src/client/deployment.tsx` | The Deployment settings, also shown in DeepSeek Harness's Plugin Manager, with the process's instances and the form that adds one |
+| `src/client/deployment.tsx` | The Deployment settings, also shown in DeepSeek Harness's Plugin Manager |
+| `src/client/instances.tsx` | The dialog that adds an instance, opened from the instance selector: the key's checks and preview, the single-instance warning, the host's answers and the switch to the new instance |
 | `src/client/draft.tsx` | Settings drafts: `draftReducer`, their states and their merge with a newer saved revision, `saveBarText`, the save bar's line, and the save bar |
 | `src/client/controls.tsx` | Local copies of DeepSeek Harness's controls, which follow its markup, keyboard behaviour and design tokens, since the bundle does not import `@deepseek-ai/dsh-client-ui-primitives`; they read no context |
 | `src/client/widgets.tsx` | The small components the pages share, which read the panel's context: sections, page heads, load states, times, links, confirmed actions, the setup check and Markdown |
@@ -461,7 +462,7 @@ Some generic modules still refer directly to GitHub or Feishu:
 | `tests/service-script.spec.ts` | `scripts/dsh-superagent` against fake `ps`, `tmux` and `dsh` |
 | `tests/client.spec.tsx`, `tests/navigation.spec.ts`, `tests/controls.spec.tsx` | The client plugin's registration and polling, Session navigation and route memory, the local controls, and the panel's imports, which have no cycle |
 | `tests/panel-overview.spec.tsx`, `panel-source.spec.tsx`, `panel-trigger.spec.tsx`, `panel-eval.spec.tsx`, `panel-execution.spec.tsx` | Each page of the panel, against a fake management API answered by route |
-| `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, and the panel's search, glossary, route memory and instance selector |
+| `tests/panel-settings.spec.tsx`, `panel-prompts.spec.tsx`, `panel-deployment.spec.tsx`, `panel-panel.spec.tsx`, `panel-instances.spec.tsx` | The settings groups, drafts and history, the prompts, the Deployment page, the panel's search, glossary, route memory and instance selector, and adding an instance from the selector |
 | `tests/draft.spec.ts`, `tests/prompt-config.spec.ts`, `tests/markdown.spec.ts`, `tests/marks.spec.ts` | Draft states, merges and the save bar's line; the prompt configuration by section and the line diff; the Markdown subset and its links; the mark of every state the views classify |
 | `tests/panel-korean.spec.tsx` | Korean navigation, glossary, Source metadata, search, settings saves, shared pause state and error messages |
 | `tests/locales.spec.ts`, `tests/styles.spec.ts` | English, Chinese and Korean key and placeholder coverage, localized metadata and timestamps, the stylesheet |

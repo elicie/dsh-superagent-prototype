@@ -1,12 +1,13 @@
 /** Root panel shell: instance selection, header with global search and glossary, top-level navigation tabs, and active route view. */
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import type { ConfigForm } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { managementPrefix, type InstanceAdding, type InstanceView } from '../instance.ts'
-import { useInstances, type SearchView } from './api.ts'
+import { useInstances, type InstancesData, type SearchView } from './api.ts'
 import { Button, Dot, Icon, Input, Modal, SegmentedTabs } from './controls.tsx'
-import { InstancesContext, usePageForm, type DeploymentForm } from './deployment.tsx'
+import { usePageForm, type DeploymentForm } from './deployment.tsx'
 import { EvalStatus } from './eval.tsx'
 import { ExecutionStatus } from './execution.tsx'
+import { AddInstanceDialog } from './instances.tsx'
 import { ticketMark } from './marks.ts'
 import { GLOSSARY, GLOSSARY_VALUES, en, ko, zh, type DshSuperagentKey } from './locales.ts'
 import { OverviewPage } from './overview.tsx'
@@ -211,20 +212,25 @@ const instanceName = (t: T, { instance, repository }: Known) =>
 const ADD_OPTION = '+'
 /**
  * Header selector over the listed instances; a selected instance missing from the list, as while it restarts, stays and is marked.
- * With `adding` it ends in "Add instance…", which opens the Deployment settings of the instance shown without selecting another.
+ * With `adding` it ends in "Add instance…", which opens the dialog that adds one, or says why it cannot, without selecting another.
  */
-function InstanceSelect({ t, instances, selected, select, adding }: { t: T; instances: InstanceView[]; selected: Known
-  select: (instance: string) => void; adding: InstanceAdding | undefined }) {
-  const { navigate } = usePanel()
+function InstanceSelect({ t, instances, selected, select, adding, reload, switchTo }: Pick<InstancesData, 'reload'> & { t: T
+  instances: InstanceView[]; selected: Known; select: (instance: string) => void; adding: InstanceAdding | undefined
+  switchTo: (instance: InstanceView, notice: string) => void }) {
+  const [open, setOpen] = useState(false)
   const listed = instances.some(view => view.instance === selected.instance)
   const options: Known[] = listed ? instances : [...instances, selected].sort((a, b) => a.instance < b.instance ? -1 : 1)
   const label = (view: Known) => listed || view.instance !== selected.instance ? instanceName(t, view)
     : t('instanceUnavailable', { name: instanceName(t, view) })
-  return <select className="dt-select dt-instance-select" aria-label={t('instanceLabel')} title={label(selected)} value={selected.instance}
-    onChange={event => event.target.value === ADD_OPTION ? navigate(settingsRoute('deployment')) : select(event.target.value)}>
-    {options.map(view => <option key={view.instance} value={view.instance}>{label(view)}</option>)}
-    {adding && <option value={ADD_OPTION}>{t('instanceAddOption')}</option>}
-  </select>
+  return <>
+    <select className="dt-select dt-instance-select" aria-label={t('instanceLabel')} title={label(selected)} value={selected.instance}
+      onChange={event => { if (event.target.value === ADD_OPTION) setOpen(true); else select(event.target.value) }}>
+      {options.map(view => <option key={view.instance} value={view.instance}>{label(view)}</option>)}
+      {adding && <option value={ADD_OPTION}>{t('instanceAddOption')}</option>}
+    </select>
+    {open && adding && <AddInstanceDialog instances={instances} adding={adding} reload={reload} switchTo={switchTo}
+      onClose={() => setOpen(false)} />}
+  </>
 }
 
 /**
@@ -251,11 +257,10 @@ export function InstancePanel({ t, openSession, formOf }: Pick<AppProps, 't' | '
   const switchTo = useCallback((view: InstanceView, message: string) => {
     seen.current.set(view.instance, view); storeInstance(view.instance); setNotice(message); setStored(view.instance)
   }, [])
-  const control = useMemo(() => ({ instances, adding, reload, switchTo }), [instances, adding, reload, switchTo])
-  const choose = instances && (instances.length > 1 || !instances.some(view => view.instance === instance))
-  return <InstancesContext.Provider value={control}>
-    <App key={instance} t={t} openSession={openSession} deploymentForm={deploymentForm} instance={instance} prefix={selected.prefix}
-      {...notice ? { notice } : {}}
-      switcher={choose ? <InstanceSelect t={t} instances={instances} selected={selected} select={select} adding={adding} /> : undefined} />
-  </InstancesContext.Provider>
+  // A single instance gets the selector too once the host can add another, as its last option is the way to.
+  const choose = instances && (instances.length > 1 || adding?.available === true || !instances.some(view => view.instance === instance))
+  return <App key={instance} t={t} openSession={openSession} deploymentForm={deploymentForm} instance={instance} prefix={selected.prefix}
+    {...notice ? { notice } : {}}
+    switcher={choose ? <InstanceSelect t={t} instances={instances} selected={selected} select={select} adding={adding} reload={reload}
+      switchTo={switchTo} /> : undefined} />
 }
